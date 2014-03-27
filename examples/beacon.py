@@ -1,4 +1,5 @@
 from spore import Spore
+import time
 
 # Initialise nodes like this:
 lighthouse = Spore(seeds=[], address=('127.0.0.1', 1234))
@@ -12,8 +13,8 @@ def beacon(peer, message):
   peer.send('beacon_received', 'Thanks!')
 
 # Run in the background:
-threads  = lighthouse.run()
-threads += ship.run()
+lighthouse.start()
+ship.start()
 
 # Main loop, broadcast beacon message to all peers once per second:
 counter = 0
