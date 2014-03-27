@@ -23,9 +23,11 @@ node.start()
 
 nick = input("What's your nick? ")
 
+print("Type messages to send to the network and press enter.")
+
 try:
   while True:
-    message = input("Message: ")
+    message = input()
     print("You".rjust(30) + " : " + message)
     uid = str(uuid.uuid4())
     seen[uid] = True
