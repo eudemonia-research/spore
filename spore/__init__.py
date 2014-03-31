@@ -14,9 +14,10 @@ MAX_INBOUND_CONNECTIONS = 8
 
 class Peer(object):
 
-  def __init__(self, spore, address, connection=None, misbehavior=0):
+  def __init__(self, spore, address, socket=None, misbehavior=0):
+    self.recv_loop_thread = None
     self.spore = spore 
-    self.connection = connection
+    self.socket = socket
     self.address = address
     self.misbehavior = misbehavior
 
@@ -24,41 +25,53 @@ class Peer(object):
     # TODO: handle socket error
     # TODO: send RLP object instead of JSON
     message = {'method':method,'params':params}
-    self.connection.sendall(json.dumps(message).encode('utf-8') + b'\n')
+    self.socket.sendall(json.dumps(message).encode('utf-8') + b'\n')
 
   def recv(self):
     # TODO: handle socket error
     # TODO: recv use RLP instead of JSON
     data = b''
     while not data.endswith(b'\n'):
-      byte = self.connection.recv(1)
+      byte = self.socket.recv(1)
       if not byte:
         return
       data += byte
-    return json.loads(data.decode('utf-8'))
+    ret = json.loads(data.decode('utf-8'))
+    # TODO: fix this recv + recv loop logic
+    assert ret is not None
+    return ret
 
   def is_banned(self):
     return self.misbehavior >= 100
 
   def is_connected(self):
-    return self.connection is not None
+    return self.socket is not None
 
   def connect(self):
-    assert self.connection is None
-    self.connection = socket.create_connection(self.address)
+    assert self.socket is None
+    self.socket = socket.create_connection(self.address)
     # TODO: handle socket error better.
 
   def disconnect(self):
     # TODO: handle socket error
-    self.connection.shutdown()
-    self.connection.close()
-    self.connection = None
+    if self.socket:
+      # TODO: concurrency on this peer... move all of this peer's connection logic into this class.
+      self.socket.shutdown(socket.SHUT_RDWR)
+      self.socket.close()
+      self.socket = None
+
+    if self.recv_loop_thread:
+      self.recv_loop_thread.join()
 
   def recv_loop(self):
     while True:
       message = self.recv()
       if not message:
-        return
+        # We still don't know if we closed it or they did.
+        if self.socket:
+          self.socket.close()
+          self.socket = None
+        break
       # TODO: RLP encoding instead of JSON
       func = self.spore.handlers.get(message['method'], None)
       if func:
@@ -68,6 +81,8 @@ class Peer(object):
 class Spore(object):
 
   def __init__(self, seeds=[], address=None):
+    self.running = False
+    self.server = None
     self.address = address
     self.handlers = {}
     self.peers = {}
@@ -81,8 +96,10 @@ class Spore(object):
     """ Loops around the peer list once per second looking for peers to connect
         to, if we need to """
 
-    while True:
-      self.outbound_connections_semaphore.acquire()
+    while self.running:
+      if not self.outbound_connections_semaphore.acquire(timeout=0.1):
+        # check to see if we are still running once a second.
+        continue
 
       connected = False
 
@@ -92,7 +109,7 @@ class Spore(object):
           try:
             peer.connect()
             connected = True
-            threading.Thread(target=peer.recv_loop).start()
+            self.recv_loop_thread = threading.Thread(target=peer.recv_loop).start()
             break
           except ConnectionRefusedError:
             peer.connection = None
@@ -102,9 +119,9 @@ class Spore(object):
       if not connected:
         self.outbound_connections_semaphore.release()
 
-      time.sleep(1)
+      time.sleep(0.1)
 
-  def incoming_connection_handler(self, connection, address):
+  def incoming_connection_handler(self, socket, address):
     """ Handler for an outbound connection to a peer """
     self.peers_lock.acquire()
     if address not in self.peers:
@@ -114,23 +131,40 @@ class Spore(object):
 
     # TODO: check if we are already connected to this peer
     #       and increase misbehaving if we are
-    if peer.connection is not None:
-      peer.connection.close()
-      peer.connection = None
-    assert peer.connection is None
-    peer.connection = connection
+    assert peer.socket is None
+    peer.socket = socket
 
+    peer.recv_loop_thread = threading.current_thread()
     peer.recv_loop()
 
   def accept_loop(self):
     """ Listens for connections """
     self.server = socket.socket()
+    # NOTE: there should be a way to get this to work without this option...
+    self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self.server.bind(self.address)
     self.server.listen(MAX_INBOUND_CONNECTIONS)
-    while True:
+    self.server.settimeout(1)
+    while self.running:
       self.inbound_connections_semaphore.acquire()
-      connection, address = self.server.accept()
+      try:
+        connection, address = self.server.accept()
+      except socket.timeout:
+        self.inbound_connections_semaphore.release()
+        continue
       threading.Thread(target=self.incoming_connection_handler, args=(connection, address)).start()
+    #self.server.shutdown(socket.SHUT_WR)
+    self.server.close()
+
+  def num_connected_peers(self):
+    """ Returns the number of connected peers """
+    count = 0
+    self.peers_lock.acquire()
+    for address, peer in self.peers.items():
+      if peer.is_connected():
+        count += 1
+    self.peers_lock.release()
+    return count
 
   def handler(self, func):
     self.handlers[func.__name__] = func
@@ -143,6 +177,7 @@ class Spore(object):
     self.peers_lock.release()
 
   def start(self):
+    self.running = True
     self.threads = [threading.Thread(target=self.connect_loop)]
     if self.address:
       self.threads.append(threading.Thread(target=self.accept_loop))
@@ -150,11 +185,15 @@ class Spore(object):
       thread.start()
 
   def stop(self):
+    # Set conditions to stop the accept/connect threads:
+    self.running = False
+
+    # Wait for accept/connect threads to stop:
+    for thread in self.threads:
+      thread.join()
+
+    # Disconnect all peers:
     self.peers_lock.acquire()
     for addr, peer in self.peers.items():
       peer.disconnect()
     self.peers_lock.release()
-    for thread in self.threads:
-      thread.stop()
-    self.server.shutdown()
-    self.server.close()
