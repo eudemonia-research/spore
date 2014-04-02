@@ -172,10 +172,9 @@ class Spore(object):
 
   def broadcast(self, method, params):
     """ Broadcasts data as a json object to all connected peers """
-    self.peers_lock.acquire()
-    for addr, peer in self.peers.items():
-      peer.send(method, params)
-    self.peers_lock.release()
+    with self.peers_lock:
+      for addr, peer in self.peers.items():
+        peer.send(method, params)
 
   def run(self):
     self.running = True
@@ -184,8 +183,14 @@ class Spore(object):
     if self.address:
       self.accept_thread = threading.Thread(target=self.accept_loop)
       self.accept_thread.start()
-      self.accept_thread.join()
-    self.connect_thread.join()
+
+    try:
+      if self.address:
+        self.accept_thread.join()
+      self.connect_thread.join()
+    except KeyboardInterrupt:
+      print("Received keyboard interrupt, shutting down...")
+      self.shutdown()
 
   def shutdown(self):
     # Set conditions to stop the accept/connect threads:
@@ -196,7 +201,6 @@ class Spore(object):
     self.connect_thread.join()
 
     # Disconnect all peers:
-    self.peers_lock.acquire()
-    for addr, peer in self.peers.items():
-      peer.disconnect()
-    self.peers_lock.release()
+    with self.peers_lock:
+      for addr, peer in self.peers.items():
+        peer.disconnect()
