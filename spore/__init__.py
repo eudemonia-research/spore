@@ -104,7 +104,6 @@ class Peer(object):
     # TODO: handle socket errors
     with self.socket_lock:
       if self.socket is not None:
-        print("Disconnecting " + str(self.socket))
         self.socket.shutdown(socket.SHUT_RDWR)
         self.socket.close()
         self.socket = None
@@ -118,9 +117,7 @@ class Peer(object):
 
   def recv_loop(self):
     while True:
-      print("About to recv from " + str(self.socket))
       message = self._recv()
-      print("Returned from recv from " + str(self.socket))
       if not message:
         # We still don't know if we closed it or they did, so disconnect just
         # in case.
