@@ -28,7 +28,7 @@ class Peer(object):
     with self.send_lock:
       self.socket.sendall(json.dumps(message).encode('utf-8') + b'\n')
 
-  def recv(self):
+  def _recv(self):
     # TODO: handle socket error
     # TODO: recv use RLP instead of JSON
     data = b''
@@ -66,7 +66,7 @@ class Peer(object):
 
   def recv_loop(self):
     while True:
-      message = self.recv()
+      message = self._recv()
       if not message:
         # We still don't know if we closed it or they did.
         if self.socket:
