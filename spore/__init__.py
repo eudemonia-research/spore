@@ -15,6 +15,7 @@ class Peer(object):
 
   def __init__(self, spore, address, socket=None, misbehavior=0):
     self.recv_loop_thread = None
+    self.send_lock = threading.Lock()
     self.spore = spore 
     self.socket = socket
     self.address = address
@@ -24,7 +25,8 @@ class Peer(object):
     # TODO: handle socket error
     # TODO: send RLP object instead of JSON
     message = {'method':method,'params':params}
-    self.socket.sendall(json.dumps(message).encode('utf-8') + b'\n')
+    with self.send_lock:
+      self.socket.sendall(json.dumps(message).encode('utf-8') + b'\n')
 
   def recv(self):
     # TODO: handle socket error
