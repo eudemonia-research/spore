@@ -9,7 +9,6 @@ MAX_OUTBOUND_CONNECTIONS = 8
 MAX_INBOUND_CONNECTIONS = 8
 
 # TODO: release connection semaphores when the connections die.
-# TODO: synchronization wrappers
 # TODO: move all connection logic (semaphores etc) into Peer class.
 
 class Peer(object):
@@ -81,6 +80,9 @@ class Peer(object):
 class Spore(object):
 
   def __init__(self, seeds=[], address=None):
+    self.accept_thread = None
+    self.connect_thread = None
+
     self.running = False
     self.server = None
     self.address = address
@@ -103,18 +105,17 @@ class Spore(object):
 
       connected = False
 
-      self.peers_lock.acquire()
-      for addr, peer in self.peers.items():
-        if not peer.is_connected() and not peer.is_banned():
-          try:
-            peer.connect()
-            connected = True
-            self.recv_loop_thread = threading.Thread(target=peer.recv_loop).start()
-            break
-          except ConnectionRefusedError:
-            peer.connection = None
-            peer.misbehavior += 30
-      self.peers_lock.release()
+      with self.peers_lock:
+        for addr, peer in self.peers.items():
+          if not peer.is_connected() and not peer.is_banned():
+            try:
+              peer.connect()
+              connected = True
+              peer.recv_loop_thread = threading.Thread(target=peer.recv_loop).start()
+              break
+            except ConnectionRefusedError:
+              peer.connection = None
+              peer.misbehavior += 30
 
       if not connected:
         self.outbound_connections_semaphore.release()
@@ -176,21 +177,23 @@ class Spore(object):
       peer.send(method, params)
     self.peers_lock.release()
 
-  def start(self):
+  def run(self):
     self.running = True
-    self.threads = [threading.Thread(target=self.connect_loop)]
+    self.connect_thread = threading.Thread(target=self.connect_loop)
+    self.connect_thread.start()
     if self.address:
-      self.threads.append(threading.Thread(target=self.accept_loop))
-    for thread in self.threads:
-      thread.start()
+      self.accept_thread = threading.Thread(target=self.accept_loop)
+      self.accept_thread.start()
+      self.accept_thread.join()
+    self.connect_thread.join()
 
-  def stop(self):
+  def shutdown(self):
     # Set conditions to stop the accept/connect threads:
     self.running = False
 
-    # Wait for accept/connect threads to stop:
-    for thread in self.threads:
-      thread.join()
+    if self.accept_thread:
+      self.accept_thread.join()
+    self.connect_thread.join()
 
     # Disconnect all peers:
     self.peers_lock.acquire()
