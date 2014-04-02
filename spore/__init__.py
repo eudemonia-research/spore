@@ -1,4 +1,5 @@
 import json
+import random
 import signal
 import sys
 import socket
@@ -8,16 +9,14 @@ import time
 MAX_OUTBOUND_CONNECTIONS = 8
 MAX_INBOUND_CONNECTIONS = 8
 
-# TODO: release connection semaphores when the connections die.
-# TODO: move all connection logic (semaphores etc) into Peer class.
-
 class Peer(object):
 
-  def __init__(self, spore, address, socket=None, misbehavior=0):
+  def __init__(self, spore, address, misbehavior=0):
     self.recv_loop_thread = None
     self.send_lock = threading.Lock()
-    self.spore = spore 
-    self.socket = socket
+    self.socket_lock = threading.Lock()
+    self.spore = spore
+    self.socket = None
     self.address = address
     self.misbehavior = misbehavior
 
@@ -38,40 +37,94 @@ class Peer(object):
         return
       data += byte
     ret = json.loads(data.decode('utf-8'))
-    # TODO: fix this recv + recv loop logic
+    # FIXME: fix this recv + recv loop logic
+    #        (can send a "null" message atm)
     assert ret is not None
     return ret
+
+  def is_connected(self):
+    """ Returns if this peer is connected. Only valid at the time of the call,
+        as the socket may close at any time.
+    """
+    return self.socket is not None
 
   def is_banned(self):
     return self.misbehavior >= 100
 
-  def is_connected(self):
-    return self.socket is not None
+  def attempt_connection(self, sock=None):
+    """ Attempts a connection if it is appropriate.
+        Returns True if a successful connection is made
+        Otherwise returns False
 
-  def connect(self):
-    assert self.socket is None
-    self.socket = socket.create_connection(self.address)
-    # TODO: handle socket error better.
+        If a sock is provided then that socket is used for the connection.
+        If the connection is unsuccessful the socket is returned untouched.
+    """
+
+    # Check that we have enough room for a new connection.
+    if not self.spore.outbound_sockets_semaphore.acquire(blocking=False):
+      return False
+
+    # Check if this peer is banned.
+    if self.is_banned():
+      self.spore.outbound_sockets_semaphore.release()
+      return False
+
+    with self.socket_lock:
+      if self.socket is not None:
+        # We already have a socket, therefore we are already connected.
+        self.spore.outbound_sockets_semaphore.release()
+        return False
+
+      # Try connecting.
+      try:
+        if sock:
+          self.socket = sock
+        else:
+          self.socket = socket.create_connection(self.address)
+      #except OSError as e:
+      #  # Can't connect. Not necessarily misbehaving, but depending on why we
+      #  # couldn't connect, maybe we want to say this node doesn't exist.
+      #  # For now just print it out.
+      #  print("Couldn't connect to " + str(self.address))
+      #  print(str(e))
+      #  self.spore.outbound_sockets_semaphore.release()
+      #  return False 
+      except ConnectionRefusedError:
+        self.misbehavior += 30
+        self.spore.outbound_sockets_semaphore.release()
+        return False
+
+      # Okay, we are connected. Start this peer's thread and return.
+      self.recv_loop_thread = threading.Thread(target=self.recv_loop)
+      self.recv_loop_thread.start()
+      return True
+
 
   def disconnect(self):
-    # TODO: handle socket error
-    if self.socket:
-      # TODO: concurrency on this peer... move all of this peer's connection logic into this class.
-      self.socket.shutdown(socket.SHUT_RDWR)
-      self.socket.close()
-      self.socket = None
+    # TODO: handle socket errors
+    with self.socket_lock:
+      if self.socket is not None:
+        print("Disconnecting " + str(self.socket))
+        self.socket.shutdown(socket.SHUT_RDWR)
+        self.socket.close()
+        self.socket = None
 
-    if self.recv_loop_thread:
-      self.recv_loop_thread.join()
+        # FIXME: This part doesn't appear to be working
+        #
+        #current_thread = threading.current_thread()
+        #if self.recv_loop_thread and current_thread != self.recv_loop_thread:
+        #  self.recv_loop_thread.join()
+        #  self.recv_loop_thread = None
 
   def recv_loop(self):
     while True:
+      print("About to recv from " + str(self.socket))
       message = self._recv()
+      print("Returned from recv from " + str(self.socket))
       if not message:
-        # We still don't know if we closed it or they did.
-        if self.socket:
-          self.socket.close()
-          self.socket = None
+        # We still don't know if we closed it or they did, so disconnect just
+        # in case.
+        self.disconnect()
         break
       # TODO: RLP encoding instead of JSON
       func = self.spore.handlers.get(message['method'], None)
@@ -93,55 +146,37 @@ class Spore(object):
     for addr in seeds:
       self.peers[addr] = Peer(self, addr)
     self.peers_lock = threading.Lock()
-    self.outbound_connections_semaphore = threading.BoundedSemaphore(MAX_OUTBOUND_CONNECTIONS)
-    self.inbound_connections_semaphore = threading.BoundedSemaphore(MAX_INBOUND_CONNECTIONS)
+    # TODO: add inbound socket semaphore, currently all connections use this one.
+    self.outbound_sockets_semaphore = threading.BoundedSemaphore(MAX_OUTBOUND_CONNECTIONS)
 
   def connect_loop(self):
     """ Loops around the peer list once per second looking for peers to connect
         to, if we need to """
 
     while self.running:
-      if not self.outbound_connections_semaphore.acquire(timeout=0.1):
-        # check to see if we are still running once a second.
-        continue
-
-      connected = False
-
+      peer = None
       with self.peers_lock:
-        for addr, peer in self.peers.items():
-          if not peer.is_connected() and not peer.is_banned():
-            try:
-              peer.connect()
-              connected = True
-              peer.recv_loop_thread = threading.Thread(target=peer.recv_loop).start()
-              break
-            except ConnectionRefusedError:
-              peer.connection = None
-              peer.misbehavior += 30
-
-      if not connected:
-        self.outbound_connections_semaphore.release()
-
+        # TODO: make this loop more efficient by maining a peer list that is
+        # actually a list. The throttling per IP is another thing altogether.
+        peers = self.peers.items()
+        if len(peers) != 0:
+          addr, peer = random.choice(list(peers))
+      if peer:
+        peer.attempt_connection()
       time.sleep(0.1)
 
   def incoming_connection_handler(self, socket, address):
-    """ Handler for an outbound connection to a peer """
+    """ Handler for an outbound socket to a peer """
     self.peers_lock.acquire()
     if address not in self.peers:
       self.peers[address] = Peer(self, address)
     peer = self.peers[address]
     self.peers_lock.release()
 
-    # TODO: check if we are already connected to this peer
-    #       and increase misbehaving if we are
-    assert peer.socket is None
-    peer.socket = socket
-
-    peer.recv_loop_thread = threading.current_thread()
-    peer.recv_loop()
+    peer.attempt_connection(socket)
 
   def accept_loop(self):
-    """ Listens for connections """
+    """ Listens for new connections """
     self.server = socket.socket()
     # NOTE: there should be a way to get this to work without this option...
     self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -149,14 +184,12 @@ class Spore(object):
     self.server.listen(MAX_INBOUND_CONNECTIONS)
     self.server.settimeout(1)
     while self.running:
-      self.inbound_connections_semaphore.acquire()
       try:
-        connection, address = self.server.accept()
+        sock, address = self.server.accept()
       except socket.timeout:
-        self.inbound_connections_semaphore.release()
         continue
-      threading.Thread(target=self.incoming_connection_handler, args=(connection, address)).start()
-    #self.server.shutdown(socket.SHUT_WR)
+      threading.Thread(target=self.incoming_connection_handler, args=(sock, address)).start()
+    self.server.shutdown(socket.SHUT_WR)
     self.server.close()
 
   def num_connected_peers(self):
