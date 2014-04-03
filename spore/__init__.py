@@ -1,4 +1,6 @@
 import json
+import traceback
+import collections
 import random
 import signal
 import sys
@@ -101,7 +103,14 @@ class Peer(object):
         self.spore.outbound_sockets_semaphore.release()
         return False
 
-      # Okay, we are connected. Start this peer's thread and return.
+      # Run the on_connect handler threads in series.
+      for func in self.spore.on_connect_handlers:
+        try:
+          func(self)
+        except:
+          traceback.print_exc()
+
+      # Okay, we are connected, start this peer's main thread.
       self.recv_loop_thread = threading.Thread(target=self.recv_loop)
       self.recv_loop_thread.start()
       return True
@@ -114,6 +123,14 @@ class Peer(object):
         self.socket.shutdown(socket.SHUT_RDWR)
         self.socket.close()
         self.socket = None
+
+
+        # Run the on_disconnect handler threads in series.
+        for func in self.spore.on_disconnect_handlers:
+          try:
+            func(self)
+          except:
+            traceback.print_exc()
 
         # FIXME: This part doesn't appear to be working
         #
@@ -131,26 +148,50 @@ class Peer(object):
         self.disconnect()
         break
       # TODO: RLP encoding instead of JSON
-      func = self.spore.handlers.get(message['method'], None)
-      if func:
-        func(self, message['params'])
+      funclist = self.spore.handlers.get(message['method'])
+      if funclist is None:
+        # TODO: decide whether or not to throw misbehaving here.
+        pass
+      else:
+        for func in funclist:
+          try:
+            func(self, message['params'])
+          except:
+            traceback.print_exc()
 
 
 class Spore(object):
 
   def __init__(self, seeds=[], address=None):
+
+    # Reference to the main accept and connect threads.
     self.accept_thread = None
     self.connect_thread = None
 
+    # Boolean representing if the server is running.
     self.running = False
+
+    # The socket that this instance is listening on.
     self.server = None
+
+    # The address that the server should listen on as a (host, port) tuple.
     self.address = address
-    self.handlers = {}
+
+    # Handlers of messages for this instance.
+    self.handlers = collections.defaultdict(list)
+    self.on_connect_handlers = []
+    self.on_disconnect_handlers = []
+
+    # Dictionary mapping (host, port) -> peer.
     self.peers = {}
     for addr in seeds:
       self.peers[addr] = Peer(self, addr)
+
+    # Lock for the peers dictionary.
     self.peers_lock = threading.Lock()
-    # TODO: add inbound socket semaphore, currently all connections use this one.
+
+    # Semaphore to limit the number of connections.
+    # TODO: add inbound socket semaphore, currently all connections use this outbound one.
     self.outbound_sockets_semaphore = threading.BoundedSemaphore(MAX_OUTBOUND_CONNECTIONS)
 
   def connect_loop(self):
@@ -202,6 +243,7 @@ class Spore(object):
       threading.Thread(target=self.incoming_connection_handler, args=(sock, address)).start()
     self.server.shutdown(socket.SHUT_WR)
     self.server.close()
+    self.server = None
 
   def num_connected_peers(self):
     """ Returns the number of connected peers """
@@ -214,7 +256,13 @@ class Spore(object):
     return count
 
   def handler(self, func):
-    self.handlers[func.__name__] = func
+    self.handlers[func.__name__].append(func)
+
+  def on_connect(self, func):
+    self.on_connect_handlers.append(func)
+
+  def on_disconnect(self, func):
+    self.on_disconnect_handlers.append(func)
 
   def broadcast(self, method, params):
     """ Broadcasts data as a json object to all connected peers """
