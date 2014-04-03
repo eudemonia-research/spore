@@ -56,9 +56,33 @@ class TestNetworking(unittest.TestCase):
         self.assertEqual(self.client.num_connected_peers(), 1)
         self.assertEqual(self.server.num_connected_peers(), 1)
 
+    # TODO: def test_max_connections(self):
+    # Test the connection queue.
+
+    def test_on_connect(self):
+        on_connect_called = False
+        on_disconnect_called = False
+        @self.server.on_connect
+        def do_one_thing(peer):
+            nonlocal on_connect_called
+            peer.send('some_data','')
+            on_connect_called = True
+        @self.server.on_disconnect
+        def do_one_thing(peer):
+            nonlocal on_disconnect_called
+            on_disconnect_called = True
+        new_client = Spore(seeds=[('127.0.0.1', self.port)])
+        threading.Thread(target=new_client.run).start()
+        time.sleep(0.1)
+        self.assertTrue(on_connect_called)
+        time.sleep(0.1)
+        new_client.shutdown()
+        time.sleep(0.1)
+        self.assertTrue(on_disconnect_called)
+
     def test_messages(self):
-        self.client_received_message = False
-        self.server_received_message = False
+        client_received_message = False
+        server_received_message = False
 
         # Checks encoding.
         MAGIC_FOR_SERVER = {'true':['1234','false']}
@@ -66,25 +90,27 @@ class TestNetworking(unittest.TestCase):
 
         @self.server.handler
         def client_to_server(peer, params):
+            nonlocal server_received_message
             self.assertEqual(params['magic_for_server'], MAGIC_FOR_SERVER)
-            self.server_received_message = True
+            server_received_message = True
 
         @self.client.handler
         def server_to_client(peer, params):
+            nonlocal client_received_message
             self.assertEqual(params['magic_for_client'], MAGIC_FOR_CLIENT)
-            self.client_received_message = True
+            client_received_message = True
 
         self.server.broadcast('client_to_server', {'magic_for_server': MAGIC_FOR_SERVER})
         self.client.broadcast('server_to_client', {'magic_for_client': MAGIC_FOR_CLIENT})
         time.sleep(0.1)
-        self.assertFalse(self.client_received_message)
-        self.assertFalse(self.server_received_message)
+        self.assertFalse(client_received_message)
+        self.assertFalse(server_received_message)
 
         self.server.broadcast('server_to_client', {'magic_for_client': MAGIC_FOR_CLIENT})
         self.client.broadcast('client_to_server', {'magic_for_server': MAGIC_FOR_SERVER})
         time.sleep(0.1)
-        self.assertTrue(self.client_received_message)
-        self.assertTrue(self.server_received_message)
+        self.assertTrue(client_received_message)
+        self.assertTrue(server_received_message)
 
 
 if __name__ == '__main__':
