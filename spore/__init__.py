@@ -12,12 +12,27 @@ MAX_INBOUND_CONNECTIONS = 8
 class Peer(object):
 
   def __init__(self, spore, address, misbehavior=0):
+
+    # Reference to this peer's main recv_loop thread
     self.recv_loop_thread = None
+
+    # Lock for when sending on this peer's socket.
     self.send_lock = threading.Lock()
+
+    # Lock for when either connecting or disconnecting.
     self.socket_lock = threading.Lock()
+
+    # Reference to the spore instance (e.g. for connection limit semaphores)
     self.spore = spore
+
+    # The socket that this peer is communicating over.
     self.socket = None
+
+    # The address of this peer as a tuple (host, port)
     self.address = address
+
+    # This misbehavior of this peer.
+    # FIXME: This should be per host.
     self.misbehavior = misbehavior
 
   def send(self, method, params):
@@ -81,14 +96,6 @@ class Peer(object):
           self.socket = sock
         else:
           self.socket = socket.create_connection(self.address)
-      #except OSError as e:
-      #  # Can't connect. Not necessarily misbehaving, but depending on why we
-      #  # couldn't connect, maybe we want to say this node doesn't exist.
-      #  # For now just print it out.
-      #  print("Couldn't connect to " + str(self.address))
-      #  print(str(e))
-      #  self.spore.outbound_sockets_semaphore.release()
-      #  return False 
       except ConnectionRefusedError:
         self.misbehavior += 30
         self.spore.outbound_sockets_semaphore.release()
