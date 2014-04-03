@@ -158,7 +158,14 @@ class Spore(object):
         to, if we need to """
 
     while self.running:
+      # Acquire and release this semaphore so that we're not continually
+      # creating an array of all peers whilst we're sufficiently connected.
+      if not self.outbound_sockets_semaphore.acquire(timeout=0.1):
+        continue
+      self.outbound_sockets_semaphore.release()
+
       peer = None
+
       with self.peers_lock:
         # TODO: make this loop more efficient by maining a peer list that is
         # actually a list. The throttling per IP is another thing altogether.
