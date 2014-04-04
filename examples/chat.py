@@ -1,4 +1,5 @@
 from spore import Spore
+import threading
 import uuid
 import sys
 
@@ -7,19 +8,30 @@ my_port   = int(sys.argv[1])
 seed_port = int(sys.argv[2])
 
 # Create this node
-node = Spore(seeds=[('127.0.0.1', seed_port)], address=('127.0.0.1', my_port))
+me = Spore(seeds=[('127.0.0.1', seed_port)], address=('127.0.0.1', my_port))
 
 # Global seen, so we don't broadcast messages ad infinitum
 seen = {}
 
-@node.handler
-def chat(peer, params):
-  if params['uuid'] not in seen:
-    seen[params['uuid']] = True
-    print(params['nick'].rjust(30) + " : " + params['message'])
-    node.broadcast('chat', params)
+@me.handler('chat')
+def chat(peer, payload):
+  message, nick, uid = payload
+  message = message.decode('utf-8')
+  nick = nick.decode('utf-8')
+  uid = uid.decode('utf-8')
+  if uid not in seen:
 
-node.start()
+    # Mark it as seen
+    seen[uid] = True
+
+    # print the message
+    print(nick.rjust(30) + " : " + message)
+
+    # Relay this message to other peers
+    me.broadcast('chat', payload)
+
+# Start it in it's own thread.
+threading.Thread(target=me.run).start()
 
 nick = input("What's your nick? ")
 
@@ -28,11 +40,8 @@ print("Type messages to send to the network and press enter.")
 try:
   while True:
     message = input()
-    print("You".rjust(30) + " : " + message)
     uid = str(uuid.uuid4())
     seen[uid] = True
-    node.broadcast('chat', {'message': message,
-                            'nick': nick,
-                            'uuid': uid} )
+    me.broadcast('chat', [message.encode('utf-8'),nick.encode('utf-8'),uid.encode('utf-8')])
 finally:
-  node.stop()
+  me.shutdown()
