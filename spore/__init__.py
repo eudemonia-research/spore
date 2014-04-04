@@ -43,8 +43,9 @@ class Peer(object):
 
   def send(self, method, payload=b''):
     # TODO: handle socket error
-    with self.send_lock:
-      self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
+    with self.send_lock, self.socket_lock:
+      if self.socket:
+        self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
 
   def is_connected(self):
     """ Returns if this peer is connected. Only valid at the time of the call,
@@ -132,6 +133,7 @@ class Peer(object):
     self.recv_lock.release()
     with self.recv_lock:
       while True:
+        # FIXME: self.socket could become None at any time...
         data = rlp.recv(self.socket)
         if data is None:
           # We still don't know if we closed it or they did, so disconnect just
@@ -261,7 +263,9 @@ class Spore(object):
     """ Broadcasts data as a json object to all connected peers """
     with self.peers_lock:
       for addr, peer in self.peers.items():
-        peer.send(method, payload)
+        if peer.is_connected():
+          # FIXME: peer might become disconnected =/
+          peer.send(method, payload)
 
   def run(self):
     self.running = True
