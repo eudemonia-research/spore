@@ -20,7 +20,7 @@ def encode_length(length, offset):
          return b'' + (length + offset).to_bytes(1,'big')
     elif length < 256**8:
          encoded_length = length.to_bytes((length.bit_length()+7)>>3, 'big')
-         return bytes([len(encoded_length) + offset + 55, encoded_length])
+         return bytes([len(encoded_length) + offset + 55]) + encoded_length
     else:
          raise RLPEncodingError("Input too long")
 
@@ -67,7 +67,7 @@ def decode(data, i=0):
     if byte < 0x80:
         return bytes([byte]), length
     if (byte >= 0xb8 and byte < 0xc0) or (byte >= 0xf8):
-        length_length = (byte&0x07)
+        length_length = (byte&0x07)+1
         length = int.from_bytes(data[i+1:i+1+length_length],'big')
     else:
         length = (byte & 0x3f)

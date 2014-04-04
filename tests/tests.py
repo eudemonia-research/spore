@@ -138,6 +138,11 @@ class TestRLP(unittest.TestCase):
         # b'\x0f'
         self.assertEqual(rlp.encode(b'\x0f'), bytes([0x0f]))
 
+        data = b'Lorem ipsum dolor sit amet, consectetur adipisicing elit'
+        encoded = rlp.encode(data)
+        decoded, length = rlp.decode(encoded)
+        self.assertEqual(data, decoded)
+
 
 if __name__ == '__main__':
     unittest.main()
