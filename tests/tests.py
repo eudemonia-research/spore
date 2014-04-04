@@ -1,4 +1,5 @@
 import unittest
+from spore import rlp
 import threading
 from spore import Spore
 import time
@@ -65,7 +66,7 @@ class TestNetworking(unittest.TestCase):
         @self.server.on_connect
         def do_one_thing(peer):
             nonlocal on_connect_called
-            peer.send('some_data','')
+            peer.send('some_data')
             on_connect_called = True
         @self.server.on_disconnect
         def do_one_thing(peer):
@@ -85,32 +86,57 @@ class TestNetworking(unittest.TestCase):
         server_received_message = False
 
         # Checks encoding.
-        MAGIC_FOR_SERVER = {'true':['1234','false']}
-        MAGIC_FOR_CLIENT = {'4321':['false']}
+        PAYLOAD_FOR_SERVER = [b'true',[b'1234',b'false']]
+        PAYLOAD_FOR_CLIENT = [b'4321',[b'1234']]
 
-        @self.server.handler
-        def client_to_server(peer, params):
+        @self.server.handler('client_to_server')
+        def client_to_server(peer, payload):
             nonlocal server_received_message
-            self.assertEqual(params['magic_for_server'], MAGIC_FOR_SERVER)
+            self.assertEqual(payload, PAYLOAD_FOR_SERVER)
             server_received_message = True
 
-        @self.client.handler
-        def server_to_client(peer, params):
+        @self.client.handler('server_to_client')
+        def server_to_client(peer, payload):
             nonlocal client_received_message
-            self.assertEqual(params['magic_for_client'], MAGIC_FOR_CLIENT)
+            self.assertEqual(payload, PAYLOAD_FOR_CLIENT)
             client_received_message = True
 
-        self.server.broadcast('client_to_server', {'magic_for_server': MAGIC_FOR_SERVER})
-        self.client.broadcast('server_to_client', {'magic_for_client': MAGIC_FOR_CLIENT})
+        self.server.broadcast('client_to_server', PAYLOAD_FOR_SERVER)
+        self.client.broadcast('server_to_client', PAYLOAD_FOR_CLIENT)
         time.sleep(0.1)
         self.assertFalse(client_received_message)
         self.assertFalse(server_received_message)
 
-        self.server.broadcast('server_to_client', {'magic_for_client': MAGIC_FOR_CLIENT})
-        self.client.broadcast('client_to_server', {'magic_for_server': MAGIC_FOR_SERVER})
+        self.server.broadcast('server_to_client', PAYLOAD_FOR_CLIENT)
+        self.client.broadcast('client_to_server', PAYLOAD_FOR_SERVER)
         time.sleep(0.1)
         self.assertTrue(client_received_message)
         self.assertTrue(server_received_message)
+
+
+class TestRLP(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    def tearDown(self):
+        pass
+
+    def test_encode(self):
+        encoded = rlp.encode([ [], [[]], [ [], [[]] ] ])
+        self.assertEqual(encoded, bytes([ 0xc7, 0xc0, 0xc1, 0xc0, 0xc3, 0xc0, 0xc1, 0xc0 ]))
+
+        encoded = rlp.encode([b'cat',b'dog'])
+        self.assertEqual(encoded, bytes([ 0xc8, 0x83 ]) + b'cat' + bytes([0x83]) + b'dog')
+
+        # Empty string.
+        self.assertEqual(rlp.encode(b''), bytes([ 0x80 ]))
+
+        # Empty list.
+        self.assertEqual(rlp.encode([]), bytes([ 0xc0 ]))
+
+        # b'\x0f'
+        self.assertEqual(rlp.encode(b'\x0f'), bytes([0x0f]))
 
 
 if __name__ == '__main__':

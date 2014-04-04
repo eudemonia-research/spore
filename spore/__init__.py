@@ -1,4 +1,5 @@
 import json
+from . import rlp
 import traceback
 import collections
 import random
@@ -21,6 +22,9 @@ class Peer(object):
     # Lock for when sending on this peer's socket.
     self.send_lock = threading.Lock()
 
+    # Lock for when recv'ing on this peer's socket.
+    self.recv_lock = threading.Lock()
+
     # Lock for when either connecting or disconnecting.
     self.socket_lock = threading.Lock()
 
@@ -37,27 +41,10 @@ class Peer(object):
     # FIXME: This should be per host.
     self.misbehavior = misbehavior
 
-  def send(self, method, params):
+  def send(self, method, payload=b''):
     # TODO: handle socket error
-    # TODO: send RLP object instead of JSON
-    message = {'method':method,'params':params}
     with self.send_lock:
-      self.socket.sendall(json.dumps(message).encode('utf-8') + b'\n')
-
-  def _recv(self):
-    # TODO: handle socket error
-    # TODO: recv use RLP instead of JSON
-    data = b''
-    while not data.endswith(b'\n'):
-      byte = self.socket.recv(1)
-      if not byte:
-        return
-      data += byte
-    ret = json.loads(data.decode('utf-8'))
-    # FIXME: fix this recv + recv loop logic
-    #        (can send a "null" message atm)
-    assert ret is not None
-    return ret
+      self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
 
   def is_connected(self):
     """ Returns if this peer is connected. Only valid at the time of the call,
@@ -140,24 +127,28 @@ class Peer(object):
         #  self.recv_loop_thread = None
 
   def recv_loop(self):
-    while True:
-      message = self._recv()
-      if not message:
-        # We still don't know if we closed it or they did, so disconnect just
-        # in case.
-        self.disconnect()
-        break
-      # TODO: RLP encoding instead of JSON
-      funclist = self.spore.handlers.get(message['method'])
-      if funclist is None:
-        # TODO: decide whether or not to throw misbehaving here.
-        pass
-      else:
-        for func in funclist:
-          try:
-            func(self, message['params'])
-          except:
-            traceback.print_exc()
+    # This should only be called once per peer..
+    assert self.recv_lock.acquire(blocking=False)
+    self.recv_lock.release()
+    with self.recv_lock:
+      while True:
+        data = rlp.recv(self.socket)
+        if data is None:
+          # We still don't know if we closed it or they did, so disconnect just
+          # in case.
+          self.disconnect()
+          break
+        method, payload = data
+        funclist = self.spore.handlers.get(method.decode('utf-8'))
+        if funclist is None:
+          # TODO: decide whether or not to throw misbehaving here.
+          pass
+        else:
+          for func in funclist:
+            try:
+              func(self, payload)
+            except:
+              traceback.print_exc()
 
 
 class Spore(object):
@@ -234,7 +225,7 @@ class Spore(object):
     self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self.server.bind(self.address)
     self.server.listen(MAX_INBOUND_CONNECTIONS)
-    self.server.settimeout(1)
+    self.server.settimeout(0.1)
     while self.running:
       try:
         sock, address = self.server.accept()
@@ -255,8 +246,10 @@ class Spore(object):
     self.peers_lock.release()
     return count
 
-  def handler(self, func):
-    self.handlers[func.__name__].append(func)
+  def handler(self, method):
+    def wrapper(func):
+      self.handlers[method].append(func)
+    return wrapper
 
   def on_connect(self, func):
     self.on_connect_handlers.append(func)
@@ -264,11 +257,11 @@ class Spore(object):
   def on_disconnect(self, func):
     self.on_disconnect_handlers.append(func)
 
-  def broadcast(self, method, params):
+  def broadcast(self, method, payload):
     """ Broadcasts data as a json object to all connected peers """
     with self.peers_lock:
       for addr, peer in self.peers.items():
-        peer.send(method, params)
+        peer.send(method, payload)
 
   def run(self):
     self.running = True
