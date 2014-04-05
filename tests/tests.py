@@ -113,6 +113,15 @@ class TestNetworking(unittest.TestCase):
         self.assertTrue(client_received_message)
         self.assertTrue(server_received_message)
 
+    def test_peerlist(self):
+        new_client = Spore(seeds=[('127.0.0.1', self.port)],address=('127.0.0.1', self.port+1))
+        threading.Thread(target=new_client.run).start()
+        # Wait for ages here because things need to propagate.
+        time.sleep(0.8)
+        self.assertEqual(self.client.num_connected_peers(), 2)
+        self.assertEqual(new_client.num_connected_peers(), 3)
+        new_client.shutdown()
+
 
 class TestRLP(unittest.TestCase):
 
@@ -142,7 +151,6 @@ class TestRLP(unittest.TestCase):
         encoded = rlp.encode(data)
         decoded, length = rlp.decode(encoded)
         self.assertEqual(data, decoded)
-
 
 if __name__ == '__main__':
     unittest.main()

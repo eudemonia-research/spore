@@ -188,6 +188,28 @@ class Spore(object):
     # TODO: add inbound socket semaphore, currently all connections use this outbound one.
     self.outbound_sockets_semaphore = threading.BoundedSemaphore(MAX_OUTBOUND_CONNECTIONS)
 
+
+    @self.handler('spore_peerlist')
+    def peerlist(peer, payload):
+
+      # TODO: make type checking/validation of data easier.
+
+      for address in payload:
+        # TODO: make an Address class that autoserializes.
+        addr = (socket.inet_ntoa(address[0]), int.from_bytes(address[1],'big'))
+        if (addr not in self.peers) and addr != self.address:
+          # TODO: cache these based on their compact representation, not their
+          # string representation
+          # TODO: broadcast less frequently, not for every peer.
+          self.peers[addr] = Peer(self, addr)
+          self.broadcast('spore_peerlist',[address])
+
+    if self.address:
+      @self.on_connect
+      def share_peer(peer):
+        address = [socket.inet_aton(self.address[0]), self.address[1].to_bytes(2,'big')]
+        self.broadcast('spore_peerlist',[address])
+
   def connect_loop(self):
     """ Loops around the peer list once per second looking for peers to connect
         to, if we need to """
