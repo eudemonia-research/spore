@@ -43,7 +43,8 @@ class Peer(object):
 
   def send(self, method, payload=b''):
     # TODO: handle socket error
-    with self.send_lock, self.socket_lock:
+    with self.send_lock:
+      # TODO: fix concurrency issues here with self.socket_lock
       if self.socket:
         self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
 
