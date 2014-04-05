@@ -133,10 +133,10 @@ class TestNetworking(unittest.TestCase):
         threading.Thread(target=self.client.run).start()
         time.sleep(0.1)
         print('broadcast2')
-        self.server.broadcast('test','test')
+        self.server.broadcast('test',b'test')
         time.sleep(0.1)
         print('broadcast3')
-        self.server.broadcast('test','test')
+        self.server.broadcast('test',b'test')
         time.sleep(0.1)
         # this will either finish or not - locking error
         # no asserts
