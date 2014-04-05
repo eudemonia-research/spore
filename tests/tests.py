@@ -122,6 +122,25 @@ class TestNetworking(unittest.TestCase):
         self.assertEqual(new_client.num_connected_peers(), 3)
         new_client.shutdown()
 
+    def test_broadcast(self):
+        self.client.shutdown()
+        time.sleep(0.1)
+        print('should see 3 broadcasts:')
+        print('broadcast1')
+        self.server.broadcast('anybroadcast', b'some data')
+        time.sleep(0.1)
+        self.client = Spore(seeds=[('127.0.0.1', self.port)])
+        threading.Thread(target=self.client.run).start()
+        time.sleep(0.1)
+        print('broadcast2')
+        self.server.broadcast('test','test')
+        time.sleep(0.1)
+        print('broadcast3')
+        self.server.broadcast('test','test')
+        time.sleep(0.1)
+        # this will either finish or not - locking error
+        # no asserts
+
 
 class TestRLP(unittest.TestCase):
 
