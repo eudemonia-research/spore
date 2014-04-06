@@ -140,6 +140,40 @@ class TestNetworking(unittest.TestCase):
         time.sleep(0.1)
         # this will either finish or not - locking error
         # no asserts
+        
+    def test_repeatConnections(self):
+        counter = 0
+        times_run = 10
+        for i in range(times_run):
+            self.client.shutdown()
+            time.sleep(0.1)
+            self.client = Spore(seeds=[('127.0.0.1', self.port)])
+
+            @self.client.handler('test_in')
+            def test_in_handler(node, payload):
+                nonlocal counter
+                if payload == b'1':
+                    counter += 1
+                    
+            threading.Thread(target=self.client.run).start()
+            time.sleep(0.1)
+            self.server.broadcast('test_in', b'1')
+            time.sleep(0.1)
+            
+        self.assertEqual(counter, times_run)
+        
+    def test_large_packets(self):
+        payload_test = [ [ b'\x00' * 1024 ] * 1000 ]
+        payload_recv = []
+        
+        @self.server.handler('test_large_packets')
+        def recPackets(node, payload):
+            nonlocal payload_recv
+            payload_recv = payload
+            
+        self.client.broadcast('test_large_packets', payload_test)
+        time.sleep(0.1)
+        self.assertEqual(payload_test, payload_recv)
 
 
 class TestRLP(unittest.TestCase):
@@ -165,6 +199,9 @@ class TestRLP(unittest.TestCase):
 
         # b'\x0f'
         self.assertEqual(rlp.encode(b'\x0f'), bytes([0x0f]))
+        
+        big_list = [ [ b'\x00' * 1024 ] * 1024 ]
+        self.assertEqual(rlp.decode(rlp.encode(big_list))[0], big_list)
 
         data = b'Lorem ipsum dolor sit amet, consectetur adipisicing elit'
         encoded = rlp.encode(data)

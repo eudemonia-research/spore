@@ -46,7 +46,10 @@ class Peer(object):
     with self.send_lock:
       # TODO: fix concurrency issues here with self.socket_lock
       if self.socket:
-        self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
+        try:
+          self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
+        except BrokenPipeError:
+          self.disconnect()
 
   def is_connected(self):
     """ Returns if this peer is connected. Only valid at the time of the call,
@@ -109,7 +112,14 @@ class Peer(object):
     # TODO: handle socket errors
     with self.socket_lock:
       if self.socket is not None:
-        self.socket.shutdown(socket.SHUT_RDWR)
+        
+        # catch remote shutdown
+        try:
+          self.socket.shutdown(socket.SHUT_RDWR)
+        except OSError as e:
+          if e.errno != 107: # errno.ENOTCONN
+            raise e
+        
         self.socket.close()
         self.socket = None
 
@@ -135,7 +145,11 @@ class Peer(object):
     with self.recv_lock:
       while True:
         # FIXME: self.socket could become None at any time...
-        data = rlp.recv(self.socket)
+        try:
+          data = rlp.recv(self.socket)
+        except ConnectionResetError:
+          self.disconnect()
+          break
         if data is None:
           # We still don't know if we closed it or they did, so disconnect just
           # in case.
@@ -300,7 +314,10 @@ class Spore(object):
 
     try:
       if self.address:
-        self.accept_thread.join()
+        while self.accept_thread.isAlive():
+          self.accept_thread.join(10.0)
+          # print some network stats - debug
+          #print('spore, peers: %d' % self.num_connected_peers())
       self.connect_thread.join()
     except KeyboardInterrupt:
       print("Received keyboard interrupt, shutting down...")

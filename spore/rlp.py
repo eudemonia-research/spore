@@ -1,3 +1,5 @@
+from socket import MSG_WAITALL
+
 class RLPEncodingError(Exception):
     pass
 
@@ -28,13 +30,13 @@ def recv(socket):
     """ Receives stuff, RLP encoded.
         returns bytes, a list, or None if the connection closed. """
     # TODO: better error messages when data cuts out halfway.
-    data = socket.recv(1)
+    data = socket.recv(1, MSG_WAITALL)
     if not data: return None
     [byte] = data
     if byte < 0x80:
         return data
     if (byte >= 0xb8 and byte < 0xc0) or (byte >= 0xf8):
-        data = socket.recv((byte&0x07)+1)
+        data = socket.recv((byte&0x07)+1, MSG_WAITALL)
         if not data: return None
         length = int.from_bytes(data,'big')
     else:
@@ -44,13 +46,13 @@ def recv(socket):
         # straight up bytes
         # Differentiate between b'' and connection dropped.
         if length == 0: return b''
-        data = socket.recv(length)
+        data = socket.recv(length, MSG_WAITALL)
         if not data: return None
         return data
     else:
         # array
         ret = []
-        data = socket.recv(length)
+        data = socket.recv(length, MSG_WAITALL)
         if not data: return None
         consumed = 0
         while consumed < length:
