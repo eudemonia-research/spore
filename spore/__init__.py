@@ -12,6 +12,14 @@ import time
 MAX_OUTBOUND_CONNECTIONS = 50
 MAX_INBOUND_CONNECTIONS = 50
 
+class Address(object):
+	def __init__(self, address):
+		self.host = socket.inet_ntoa(address[0])
+		self.port = int.from_bytes(address[1],'big')
+		self.t = (self.host, self.port)
+	def __getitem__(self, key):
+		return self.t[key]
+
 class Peer(object):
 
   def __init__(self, spore, address, misbehavior=0):
@@ -210,7 +218,7 @@ class Spore(object):
 
       for address in payload:
         # TODO: make an Address class that autoserializes.
-        addr = (socket.inet_ntoa(address[0]), int.from_bytes(address[1],'big'))
+        addr = Address(address).t
         if (addr not in self.peers) and addr != self.address:
           # TODO: cache these based on their compact representation, not their
           # string representation
