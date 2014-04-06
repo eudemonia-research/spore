@@ -9,8 +9,8 @@ import socket
 import threading
 import time
 
-MAX_OUTBOUND_CONNECTIONS = 8
-MAX_INBOUND_CONNECTIONS = 8
+MAX_OUTBOUND_CONNECTIONS = 50
+MAX_INBOUND_CONNECTIONS = 50
 
 class Peer(object):
 
@@ -315,9 +315,9 @@ class Spore(object):
     try:
       if self.address:
         while self.accept_thread.isAlive():
+          #print('Spore: connected peers: %d' % self.num_connected_peers())
+          #print('Spore: peers: %s' % self.peers)
           self.accept_thread.join(10.0)
-          # print some network stats - debug
-          #print('spore, peers: %d' % self.num_connected_peers())
       self.connect_thread.join()
     except KeyboardInterrupt:
       print("Received keyboard interrupt, shutting down...")
