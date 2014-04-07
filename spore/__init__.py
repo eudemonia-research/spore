@@ -48,6 +48,9 @@ class Peer(object):
     # This misbehavior of this peer.
     # FIXME: This should be per host.
     self.misbehavior = misbehavior
+    
+    # A dictionary which can be written to for general use.
+    self.data = {}
 
   def send(self, method, payload=b''):
     # TODO: handle socket error
@@ -56,7 +59,7 @@ class Peer(object):
       if self.socket:
         try:
           self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
-        except BrokenPipeError:
+        except (BrokenPipeError, OSError):
           self.disconnect()
 
   def is_connected(self):
@@ -282,16 +285,27 @@ class Spore(object):
     self.server.shutdown(socket.SHUT_WR)
     self.server.close()
     self.server = None
+    
+  def random_peer(self):
+    """ Returns a random peer """
+    peers = self.all_connected_peers()
+    if len(peers) > 0:
+        return random.choice(peers)
+    return None
 
-  def num_connected_peers(self):
-    """ Returns the number of connected peers """
-    count = 0
+  def all_connected_peers(self):
+    """ Returns a list of connected peers """
+    ret = []
     self.peers_lock.acquire()
     for address, peer in self.peers.items():
       if peer.is_connected():
-        count += 1
+        ret.append(peer)
     self.peers_lock.release()
-    return count
+    return ret
+
+  def num_connected_peers(self):
+    """ Returns the number of connected peers """
+    return len(self.all_connected_peers())
 
   def handler(self, method):
     def wrapper(func):
