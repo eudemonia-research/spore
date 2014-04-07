@@ -92,4 +92,4 @@ def decode_with_length(data, i=0):
         return ret, 1+length_length+length
 
 def decode(data):
-    return decode_with_length(data, 0)
+    return decode_with_length(data)[0]
