@@ -56,13 +56,13 @@ def recv(socket):
         if not data: return None
         consumed = 0
         while consumed < length:
-            obj, sublen = decode(data, consumed)
+            obj, sublen = decode_with_length(data, consumed)
             consumed += sublen
             ret.append(obj)
         return ret
 
 # Returns object, length
-def decode(data, i=0):
+def decode_with_length(data, i=0):
     byte = data[i]
     length = 1
     length_length = 0
@@ -85,8 +85,11 @@ def decode(data, i=0):
         consumed = 0
         x = i+1+length_length
         while consumed < length:
-            obj, sublen = decode(data, x+consumed)
+            obj, sublen = decode_with_length(data, x+consumed)
             consumed += sublen
             ret.append(obj)
 
         return ret, 1+length_length+length
+
+def decode(data):
+    return decode_with_length(data, 0)

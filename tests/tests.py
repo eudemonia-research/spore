@@ -201,11 +201,11 @@ class TestRLP(unittest.TestCase):
         self.assertEqual(rlp.encode(b'\x0f'), bytes([0x0f]))
         
         big_list = [ [ b'\x00' * 1024 ] * 1024 ]
-        self.assertEqual(rlp.decode(rlp.encode(big_list))[0], big_list)
+        self.assertEqual(rlp.decode(rlp.encode(big_list)), big_list)
 
         data = b'Lorem ipsum dolor sit amet, consectetur adipisicing elit'
         encoded = rlp.encode(data)
-        decoded, length = rlp.decode(encoded)
+        decoded = rlp.decode(encoded)
         self.assertEqual(data, decoded)
 
 if __name__ == '__main__':
