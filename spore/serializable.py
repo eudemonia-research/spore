@@ -1,8 +1,11 @@
 import threading
+from spore import rlp
 import sys
 
 # TODO: Use metaclass to do field initialization stuff.
 # TODO: See if it's possible to automate creation of PersonField()
+# TODO: Make serialize(self) an alias for self.field_class.serialize(self)
+# TODO: Deal with None serialization properly.
 
 # NOTE: the check functions cannot result in fields() being inspected
 #       the reason for this is that recursion will deadlock in this case.
@@ -24,10 +27,10 @@ class Serializable(object):
             def fields():
                 name     = String(max_length=20)
                 age      = Integer(default=0)
-                children = List(Person(),default=[])
-                is_dead  = Boolean(default=True)
-                hat      = String(null=True)
-                mother   = Person(allow_hat=False,optional=True)
+                children = List(Person(), default=[])
+                is_dead  = Boolean(default=False)
+                hat      = String(optional=True)
+                mother   = Person(allow_hat=False, optional=True)
                 privkey  = Bytes(default=b'')
 
             def options():
@@ -96,19 +99,10 @@ class Serializable(object):
 
     @classmethod
     def get_fields_ordered(Class):
-        # FIXME: deadlock may occur when multiple threads initialize multiple
-        # classes at once. It is really hard to make this stuff thread safe =/
-        # Most of the time it should be fine though.
-
-        with Class._field_lock:
-            if not hasattr(Class, '_serializable_fields'):
-                fields = {}
-                for field, value in Class._get_locals(Class.fields).items():
-                    if isinstance(value, Serializable):
-                        fields[field] = value
-                Class._serializable_fields = fields
-
-        return Class._serializable_fields
+        fields = [(value._serializable_counter, key, value) for key, value in Class.get_fields().items()]
+        fields.sort()
+        fields = [(key, value) for _, key, value in fields]
+        return fields
 
     def options():
         pass
@@ -151,6 +145,9 @@ class Serializable(object):
             for key, value in kwargs.items():
                 if key in fields:
                     setattr(self, key, value)
+            if _data:
+                for key, val in self.deserialize_map(_data).items():
+                    setattr(self, key, val)
             for field, constraints in fields.items():
                 if field not in self.__dict__:
                     setattr(self, field, None)
@@ -169,6 +166,35 @@ class Serializable(object):
                 setattr(self, key, value)
 
         Serializable._local.depth -= 1
+
+    def serialize(self, val=None):
+        if val is None: return self.serialize(self)
+        fields = self.__class__.get_fields_ordered()
+        array = []
+        for key, value in fields:
+            attr = getattr(val, key)
+            if hasattr(attr, 'serialize'):
+                array.append(attr.serialize())
+            else:
+                if attr is None:
+                    array.append(b'')
+                else:
+                    array.append(value.serialize(attr))
+        return rlp.encode(array)
+
+    def deserialize_map(self, data):
+        fields = self.__class__.get_fields_ordered()
+        array = rlp.decode(data)
+        kwargs = {}
+        for (key, value), item in zip(fields, array):
+            if item is b'':
+                kwargs[key] = None
+            else:
+                kwargs[key] = value.deserialize(item)
+        return kwargs
+
+    def deserialize(self, data):
+        return self.__class__(**self.deserialize_map(data))
 
     def __setattr__(self, key, value):
         if hasattr(self, '_check_setattr'):
@@ -206,24 +232,26 @@ class Serializable(object):
     def check(constraints, instance):
         pass
 
-    def serialize(self):
-        ret = []
-        #for each of the attributes:
-        #    if self.__class__.serialize_keys:
-        #        ret.append(([]))
-
 
 class String(Serializable):
     def check_type(constraints, instance):
         if instance.__class__ != str:
             instance_type = instance.__class__.__name__
             raise "is of type" + instance_type + ", expected str"
+    def serialize(self, s):
+        return rlp.encode(s.encode('utf-8'))
+    def deserialize(self, data):
+        return rlp.decode(data).decode('utf-8')
 
 class Integer(Serializable):
     def check_type(constraints, instance):
         if instance.__class__ != int:
             instance_type = instance.__class__.__name__
             raise ValidationError("is of type" + instance_type + ", expected int")
+    def serialize(self, i):
+        return i.to_bytes(max((i.bit_length()+7)>>3,1), 'big', signed=True)
+    def deserialize(self, data):
+        return int.from_bytes(data,'big',signed=True)
 
 class List(Serializable):
     def __init__(self, inner_field, *args, **kwargs):
@@ -240,25 +268,27 @@ class List(Serializable):
             except ValidationError as e:
                 e.args = ("inner element " + e.args[0],) + e.args[1:]
                 raise
+    def serialize(self, l):
+        return rlp.encode([self.inner_field.serialize(i) for i in l])
+    def deserialize(self, data):
+        return [self.inner_field.deserialize(d) for d in rlp.decode(data)]
 
 class Boolean(Serializable):
     def check_type(constraints, instance):
         if instance.__class__ != bool:
             instance_type = instance.__class__.__name__
             raise ValidationError("is of type" + instance_type + ", expected bool")
+    def serialize(self, b):
+        return (b'\x01' if b else b'\x00')
+    def deserialize(self, data):
+        return data == b'\x01'
 
 class Bytes(Serializable):
     def check_type(constraints, instance):
         if instance.__class__ != bytes:
             instance_type = instance.__class__.__name__
             raise ValidationError("is of type" + instance_type + ", expected bytes")
-
-
-#name     = String(max_length=20)
-#age      = Integer(default=0)
-#children = List(Person(),default=[])
-#is_dead  = Boolean(default=True)
-#hat      = String(null=True)
-#mother   = Person(allow_hat=False)
-#privkey  = Bytes()
-#Self
+    def serialize(self, b):
+        return rlp.encode(b)
+    def deserialize(self, data):
+        return rlp.decode(data)

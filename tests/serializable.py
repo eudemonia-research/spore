@@ -11,7 +11,7 @@ class TestSerializable(unittest.TestCase):
                 name     = String(max_length=20)
                 age      = Integer(default=0)
                 children = List(Person(), default=[])
-                is_dead  = Boolean(default=True)
+                is_dead  = Boolean(default=False)
                 hat      = String(optional=True)
                 mother   = Person(allow_hat=False, optional=True)
                 privkey  = Bytes(default=b'')
