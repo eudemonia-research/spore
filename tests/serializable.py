@@ -24,13 +24,23 @@ class TestSerializable(unittest.TestCase):
                     raise ValidationError("Hat is not allowed")
 
             def say_hello(self):
-                return "Hello, I'm" + self.name
+                return "Hello, I'm " + self.name
 
         # Creates an object with those fields.
         person = Person.make(name="John")
         self.assertEqual(Person.make(person.serialize()), person)
         self.assertEqual(person.say_hello(), "Hello, I'm John")
         self.assertRaises(ValidationError, Person(allow_hat=False).make, name='John', hat='Fedora')
+        person.age = 10
+        def do_validation_error():
+            person.is_dead = 12
+        self.assertRaises(ValidationError, do_validation_error)
+        person.is_dead = True
+        person.privkey = b'1234'
+        self.assertEqual(Person.make(person.serialize()), person)
+        def do_validation_error():
+            person.name = ('too long'*30)
+        self.assertRaises(ValidationError, do_validation_error)
 
 if __name__ == '__main__':
     unittest.main()

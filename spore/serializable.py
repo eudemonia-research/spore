@@ -1,8 +1,11 @@
 import threading
+import types
 from spore import rlp
+import importlib
 import sys
 
-# TODO: Use metaclass to do field initialization stuff.
+# TODO: change all variables of type "field" to name "field"
+#       rename all other variables called "field"
 # TODO: See if it's possible to automate creation of PersonField()
 # TODO: Make serialize(self) an alias for self.field_class.serialize(self)
 # TODO: Deal with None serialization properly.
@@ -13,247 +16,175 @@ import sys
 class ValidationError(Exception):
     pass
 
-class Serializable(object):
-    """
-    Automagically defines serialize() and a constructor on this object from
-    bytes.
+def _serializable_get_locals(func):
+    ret = None
+    def tracer(frame, event, arg):
+        nonlocal ret
+        if event == 'return':
+            ret = frame.f_locals.copy()
+    # tracer is activated on next call, return or exception
+    old_tracer = sys.getprofile()
+    sys.setprofile(tracer)
+    try:
+        # trace the function call
+        func()
+    finally:
+        # disable tracer and replace with old one
+        sys.setprofile(old_tracer)
+    return ret
 
-    Define like this:
 
-        from serializable import *
+class Field(object):
+    _order = 0
 
-        class Person(Serializable):
+    def __init__(self, **kwargs):
+        # Give this instance a number, to restore ordering later.
+        self._order = Field._order
+        Field._order += 1
 
-            def fields():
-                name     = String(max_length=20)
-                age      = Integer(default=0)
-                children = List(Person(), default=[])
-                is_dead  = Boolean(default=False)
-                hat      = String(optional=True)
-                mother   = Person(allow_hat=False, optional=True)
-                privkey  = Bytes(default=b'')
+        if not hasattr(self, 'type'):
 
-            def options():
-                allow_hat = True
+            class FieldInstance(object):
 
-            def check(constraints, instance):
-                if constraints.allow_hat == False and instance.hat is not None:
-                    raise ValidationError("has a hat, but hat is not allowed")
+                def __init__(inner_self, *args, **kwargs):
 
-    And use like this:
+                    # Add all the kwargs:
+                    for key, value in kwargs.items():
+                        setattr(inner_self, key, value)
 
-        person = Person(name="John")
-        assert Person(person.serialize()) == person
+                    # Add None for the fields that weren't set:
+                    for key, field in self.get_fields():
+                        if not hasattr(inner_self, key):
+                            setattr(inner_self, key, None)
 
-    The "optional" constraint is always provided and defaults to False. The
-    field may be None if this constraint is True.
+                def serialize(inner_self):
+                    return self.serialize(inner_self)
 
-    The init() hook is called during construction, if it exists.
+                def __eq__(inner_self, other):
+                    fields = self.get_fields()
+                    for name, field in fields:
+                        if getattr(inner_self, name) != getattr(other, name):
+                            return False
+                    return True
 
-    check_type can also be overrided. By default, it checks that
-    constraints.__class__ is equal to instance.__class__
+                def __setattr__(inner_self, key, value):
+                    nonlocal self
+                    fields = dict(self.get_fields())
+                    if key not in fields:
+                        raise ValidationError("No such field " + key)
+                    field = fields[key]
+                    if value is None:
+                        if callable(field.default):
+                            value = field.default()
+                        else:
+                            value = field.default
+                    try:
+                        if value is None:
+                            field.check_optional(value)
+                        else:
+                            field.check(value)
+                            field.check_type(value)
+                    except ValidationError as e:
+                        # Prepend the key to the exception message
+                        e.args = (key + " " + e.args[0],) + e.args[1:]
+                        raise
+                    inner_self.__dict__[key] = value
 
-    The check functions should return a string that can be prepended to the
-    name of the field and thrown with a validation error.
 
-    """
+            self.type = type(self.__class__.__name__ + 'Instance',
+                             (FieldInstance,),
+                             dict(self.__class__.__dict__))
 
-    _field_lock = threading.Lock()
-    _options_lock = threading.Lock()
-    _counter_lock = threading.Lock()
-    _counter = 0
-    _local = threading.local()
+        # Add the REAL make (not a class function, instance function)
 
-    def _get_locals(func):
-        ret = None
-        def tracer(frame, event, arg):
-            nonlocal ret
-            if event == 'return':
-                ret = frame.f_locals.copy()
-        # tracer is activated on next call, return or exception
-        old_tracer = sys.getprofile()
-        sys.setprofile(tracer)
-        try:
-            # trace the function call
-            func()
-        finally:
-            # disable tracer and replace with old one
-            sys.setprofile(old_tracer)
-        return ret
+        def make(inner_self, _data=None, *args, **kwargs):
+            if _data is not None:
+                return inner_self.deserialize(_data)
+            ret = self.type(*args, **kwargs)
+            self.check(ret)
+            self.check_optional(ret)
+            self.check_type(ret)
+            return ret
 
-    @classmethod
-    def get_fields(Class):
-        # FIXME: deadlock may occur when multiple threads initialize multiple
-        # classes at once. It is really hard to make this stuff thread safe =/
-        # Most of the time it should be fine though.
+        self.make = types.MethodType(make, self)
 
-        with Class._field_lock:
-            if not hasattr(Class, '_serializable_fields'):
-                fields = {}
-                for field, value in Class._get_locals(Class.fields).items():
-                    if isinstance(value, Serializable):
-                        fields[field] = value
-                Class._serializable_fields = fields
+        options = _serializable_get_locals(self.__class__.default_options)
+        self.default = None
+        self.optional = None
+        for key, value in options.items():
+            setattr(self, key, value)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
-        return Class._serializable_fields
-
-    @classmethod
-    def get_fields_ordered(Class):
-        fields = [(value._serializable_counter, key, value) for key, value in Class.get_fields().items()]
-        fields.sort()
-        fields = [(key, value) for _, key, value in fields]
-        return fields
-
-    def options():
+    def default_options():
         pass
 
-    @classmethod
-    def get_options(Class):
-        # FIXME: deadlock may occur when multiple threads initialize multiple
-        # classes at once. It is really hard to make this stuff thread safe =/
-        # Most of the time it should be fine though.
+    def check(self, instance):
+        pass
 
-        with Class._options_lock:
-            if not hasattr(Class, '_serializable_options'):
-                Class._serializable_options = Class._get_locals(Class.options)
+    def check_optional(self, value):
+        if not self.optional and value is None:
+            raise ValidationError("cannot be None")
 
-        return Class._serializable_options
+    def check_type(self, value):
+        if value.__class__ != self.type:
+            instance_type = value.__class__.__name__
+            expected_type = self.type.__name__
+            raise ValidationError("is of type " + instance_type + ", expected " + expected_type)
 
-    # Equal if all fields are equal.
-    def __eq__(self, other):
-        for field in self.__class__.get_fields():
-            if getattr(self, field) != getattr(other, field):
-                return False
-        return True
+    def get_fields(self):
+        # Default serialize is to go through each of the fields.
+        if not hasattr(self.__class__, 'fields'):
+            raise NotImplementedError(self.__class__.__name__ + " has no fields")
+        fields = _serializable_get_locals(self.__class__.fields)
+        ordered_fields = []
+        for key, value in fields.items():
+            if isinstance(value, Field):
+                ordered_fields.append((value._order, key, value))
+        ordered_fields.sort()
+        return [(key, value) for _, key, value in ordered_fields]
 
-    def __init__(self, _data=None, **kwargs):
-        # Give this instance a number, to restore ordering.
-        with Serializable._counter_lock:
-            self._serializable_counter = Serializable._counter
-            Serializable._counter += 1
-
-        try:
-            Serializable._local.depth += 1
-        except AttributeError:
-            Serializable._local.depth = 1
-
-        if Serializable._local.depth == 1:
-            # This instance is an actual instance, not a field definition.
-            # Every assignment after this point should be checked.
-            self._check_setattr = True
-            fields = self.__class__.get_fields()
-            for key, value in kwargs.items():
-                if key in fields:
-                    setattr(self, key, value)
-            if _data:
-                for key, val in self.deserialize_map(_data).items():
-                    setattr(self, key, val)
-            for field, constraints in fields.items():
-                if field not in self.__dict__:
-                    setattr(self, field, None)
-        else:
-            # This instance is a field definition.
-            # Add default options and none
-            options = self.__class__.get_options().copy()
-            if 'optional' not in options:
-                options['optional'] = False
-            if 'default' not in options:
-                options['default'] = None
-            for key, value in kwargs.items():
-                if key in options:
-                    options[key] = value
-            for key, value in options.items():
-                setattr(self, key, value)
-
-        Serializable._local.depth -= 1
-
-    def serialize(self, val=None):
-        if val is None: return self.serialize(self)
-        fields = self.__class__.get_fields_ordered()
+    def serialize(self, value):
+        # TODO: better serialization here than RLP
         array = []
-        for key, value in fields:
-            attr = getattr(val, key)
-            if hasattr(attr, 'serialize'):
-                array.append(attr.serialize())
+        for key, field in self.get_fields():
+            attr = getattr(value, key)
+            if attr is None:
+                array.append(b'')
             else:
-                if attr is None:
-                    array.append(b'')
-                else:
-                    array.append(value.serialize(attr))
+                array.append(field.serialize(attr))
         return rlp.encode(array)
 
-    def deserialize_map(self, data):
-        fields = self.__class__.get_fields_ordered()
+    def deserialize(self, data):
         array = rlp.decode(data)
         kwargs = {}
-        for (key, value), item in zip(fields, array):
+        for (key, field), item in zip(self.get_fields(), array):
             if item is b'':
                 kwargs[key] = None
             else:
-                kwargs[key] = value.deserialize(item)
-        return kwargs
+                kwargs[key] = field.deserialize(item)
+        return self.make(**kwargs)
 
-    def deserialize(self, data):
-        return self.__class__(**self.deserialize_map(data))
-
-    def __setattr__(self, key, value):
-        if hasattr(self, '_check_setattr'):
-            fields = self.__class__.get_fields()
-            if key not in fields:
-                raise ValidationError("No such field" + key)
-            try:
-                if value is None:
-                    if callable(fields[key].default):
-                        value = fields[key].default()
-                    else:
-                        value = fields[key].default
-                if value is None:
-                    fields[key].check_optional(value)
-                else:
-                    fields[key].check_type(value)
-                    fields[key].check(value)
-            except ValidationError as e:
-                # Prepend the key to the exception message
-                e.args = (key + " " + e.args[0],) + e.args[1:]
-                raise
-
-        self.__dict__[key] = value
-
-    def check_type(constraints, instance):
-        if instance.__class__ != constraints.__class__:
-            instance_type = instance.__class__.__name__
-            expected_type = constraints.__class__.__name__
-            raise ValidationError("is of type " + instance_type + ", expected " + expected_type)
-
-    def check_optional(constraints, instance):
-        if not constraints.optional and instance is None:
-            raise ValidationError("cannot be None")
-
-    def check(constraints, instance):
-        pass
+    @classmethod
+    def make(cls, *args, **kwargs):
+        return cls().make(*args, **kwargs)
 
 
-class String(Serializable):
-    def check_type(constraints, instance):
-        if instance.__class__ != str:
-            instance_type = instance.__class__.__name__
-            raise "is of type" + instance_type + ", expected str"
+class String(Field):
+    type = str
     def serialize(self, s):
         return rlp.encode(s.encode('utf-8'))
     def deserialize(self, data):
         return rlp.decode(data).decode('utf-8')
 
-class Integer(Serializable):
-    def check_type(constraints, instance):
-        if instance.__class__ != int:
-            instance_type = instance.__class__.__name__
-            raise ValidationError("is of type" + instance_type + ", expected int")
+class Integer(Field):
+    type = int
     def serialize(self, i):
         return i.to_bytes(max((i.bit_length()+7)>>3,1), 'big', signed=True)
     def deserialize(self, data):
         return int.from_bytes(data,'big',signed=True)
 
-class List(Serializable):
+class List(Field):
     def __init__(self, inner_field, *args, **kwargs):
         self.inner_field = inner_field
         super().__init__(*args, **kwargs)
@@ -273,21 +204,15 @@ class List(Serializable):
     def deserialize(self, data):
         return [self.inner_field.deserialize(d) for d in rlp.decode(data)]
 
-class Boolean(Serializable):
-    def check_type(constraints, instance):
-        if instance.__class__ != bool:
-            instance_type = instance.__class__.__name__
-            raise ValidationError("is of type" + instance_type + ", expected bool")
+class Boolean(Field):
+    type = bool
     def serialize(self, b):
         return (b'\x01' if b else b'\x00')
     def deserialize(self, data):
         return data == b'\x01'
 
-class Bytes(Serializable):
-    def check_type(constraints, instance):
-        if instance.__class__ != bytes:
-            instance_type = instance.__class__.__name__
-            raise ValidationError("is of type" + instance_type + ", expected bytes")
+class Bytes(Field):
+    type = bytes
     def serialize(self, b):
         return rlp.encode(b)
     def deserialize(self, data):
