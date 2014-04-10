@@ -6,12 +6,7 @@ import sys
 
 # TODO: change all variables of type "field" to name "field"
 #       rename all other variables called "field"
-# TODO: See if it's possible to automate creation of PersonField()
-# TODO: Make serialize(self) an alias for self.field_class.serialize(self)
 # TODO: Deal with None serialization properly.
-
-# NOTE: the check functions cannot result in fields() being inspected
-#       the reason for this is that recursion will deadlock in this case.
 
 class ValidationError(Exception):
     pass
