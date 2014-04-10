@@ -5,7 +5,7 @@ class TestSerializable(unittest.TestCase):
 
     def test_person(self):
 
-        class Person(Serializable):
+        class Person(Field):
 
             def fields():
                 name     = String(max_length=20)
@@ -16,15 +16,21 @@ class TestSerializable(unittest.TestCase):
                 mother   = Person(allow_hat=False, optional=True)
                 privkey  = Bytes(default=b'')
 
-            def options():
+            def default_options():
                 allow_hat = True
 
-            def check(constraints, instance):
-                if constraints.allow_hat == False and instance.hat is not None:
+            def check(options, instance):
+                if options.allow_hat == False and instance.hat is not None:
                     raise ValidationError("Hat is not allowed")
 
-        person = Person(name="John")
-        self.assertEqual(Person(person.serialize()), person)
+            def say_hello(self):
+                return "Hello, I'm" + self.name
+
+        # Creates an object with those fields.
+        person = Person.make(name="John")
+        self.assertEqual(Person.make(person.serialize()), person)
+        self.assertEqual(person.say_hello(), "Hello, I'm John")
+        self.assertRaises(ValidationError, Person(allow_hat=False).make, name='John', hat='Fedora')
 
 if __name__ == '__main__':
     unittest.main()
