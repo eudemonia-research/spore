@@ -172,6 +172,11 @@ class Field(object):
 
 class String(Field):
     type = str
+    def default_options():
+        max_length = None
+    def check(self, value):
+        if self.max_length is not None and len(value) > self.max_length:
+            raise ValidationError("too long")
     def serialize(self, s):
         return rlp.encode(s.encode('utf-8'))
     def deserialize(self, data):
