@@ -162,8 +162,6 @@ class Peer(object):
     data = []
     while amount > 0:
       segment = self.socket.recv(amount)
-      print("Receiving",amount)
-      print("Got",len(segment))
       if segment == b'':
         return None
       amount -= len(segment)
