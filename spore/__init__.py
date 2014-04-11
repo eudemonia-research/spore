@@ -1,5 +1,5 @@
 import json
-from . import rlp
+from encodium import *
 import traceback
 import collections
 import random
@@ -19,6 +19,11 @@ class Address(object):
 		self.t = (self.host, self.port)
 	def __getitem__(self, key):
 		return self.t[key]
+
+class SporeMessage(Field):
+  def fields():
+    method = String(max_length=100)
+    payload = Bytes()
 
 class Peer(object):
 
@@ -58,7 +63,11 @@ class Peer(object):
       # TODO: fix concurrency issues here with self.socket_lock
       if self.socket:
         try:
-          self.socket.sendall(rlp.encode([method.encode('utf-8'), payload]))
+          # TODO:fix serialization...
+          data = SporeMessage.make(method=method,payload=payload).serialize()
+          length = len(data)
+          self.socket.sendall(length.to_bytes(4,'big'))
+          self.socket.sendall(data)
         except (BrokenPipeError, OSError):
           self.disconnect()
 
@@ -149,6 +158,18 @@ class Peer(object):
         #  self.recv_loop_thread.join()
         #  self.recv_loop_thread = None
 
+  def _recv(self, amount):
+    data = []
+    while amount > 0:
+      segment = self.socket.recv(amount)
+      print("Receiving",amount)
+      print("Got",len(segment))
+      if segment == b'':
+        return None
+      amount -= len(segment)
+      data.append(segment)
+    return b''.join(data)
+
   def recv_loop(self):
     # This should only be called once per peer..
     assert self.recv_lock.acquire(blocking=False)
@@ -157,7 +178,11 @@ class Peer(object):
       while True:
         # FIXME: self.socket could become None at any time...
         try:
-          data = rlp.recv(self.socket)
+          data = self._recv(4)
+          if data:
+            length = int.from_bytes(data,'big')
+            # TODO: check that length is not too long for our purposes.
+            data = self._recv(length)
         except ConnectionResetError:
           self.disconnect()
           break
@@ -166,15 +191,15 @@ class Peer(object):
           # in case.
           self.disconnect()
           break
-        method, payload = data
-        funclist = self.spore.handlers.get(method.decode('utf-8'))
+        spore_message = SporeMessage.make(data)
+        funclist = self.spore.handlers.get(spore_message.method)
         if funclist is None:
           # TODO: decide whether or not to throw misbehaving here.
           pass
         else:
           for func in funclist:
             try:
-              func(self, payload)
+              func(self, spore_message.payload)
             except:
               traceback.print_exc()
 
@@ -214,6 +239,7 @@ class Spore(object):
     self.outbound_sockets_semaphore = threading.BoundedSemaphore(MAX_OUTBOUND_CONNECTIONS)
 
 
+    """
     @self.handler('spore_peerlist')
     def peerlist(peer, payload):
 
@@ -234,6 +260,7 @@ class Spore(object):
       def share_peer(peer):
         address = [socket.inet_aton(self.address[0]), self.address[1].to_bytes(2,'big')]
         self.broadcast('spore_peerlist',[address])
+      """
 
   def connect_loop(self):
     """ Loops around the peer list once per second looking for peers to connect
