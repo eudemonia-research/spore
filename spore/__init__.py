@@ -299,7 +299,7 @@ class Spore(object):
     # NOTE: there should be a way to get this to work without this option...
     self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self.server.bind(self.address)
-    self.server.listen(MAX_INBOUND_CONNECTIONS)
+    self.server.listen(8)
     while self.running:
       try:
         sock, address = self.server.accept()
