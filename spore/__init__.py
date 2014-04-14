@@ -300,16 +300,16 @@ class Spore(object):
     self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self.server.bind(self.address)
     self.server.listen(MAX_INBOUND_CONNECTIONS)
-    self.server.settimeout(0.1)
     while self.running:
       try:
         sock, address = self.server.accept()
-      except socket.timeout:
+      except OSError as e:
+        if e.errno == 22: # Server shutdown
+          break
+        print("Socket error during accept: " + str(e))
+        time.sleep(1)
         continue
       threading.Thread(target=self.incoming_connection_handler, args=(sock, address)).start()
-    self.server.shutdown(socket.SHUT_WR)
-    self.server.close()
-    self.server = None
     
   def random_peer(self):
     """ Returns a random peer """
@@ -361,10 +361,7 @@ class Spore(object):
 
     try:
       if self.address:
-        while self.accept_thread.isAlive():
-          #print('Spore: connected peers: %d' % self.num_connected_peers())
-          #print('Spore: peers: %s' % self.peers)
-          self.accept_thread.join(10.0)
+        self.accept_thread.join()
       self.connect_thread.join()
     except KeyboardInterrupt:
       print("Received keyboard interrupt, shutting down...")
@@ -375,6 +372,9 @@ class Spore(object):
     self.running = False
 
     if self.accept_thread:
+      self.server.shutdown(socket.SHUT_RDWR)
+      self.server.close()
+      self.server = None
       self.accept_thread.join()
     self.connect_thread.join()
 
