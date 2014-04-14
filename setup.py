@@ -5,6 +5,8 @@ from distutils.command.build_py import build_py as _build_py
 from distutils.command.clean import clean as _clean
 import subprocess, os, sys
 
+protoc = "protoc"
+
 def generate_proto(source):
   """Invokes the Protocol Compiler to generate a _pb2.py from the given
   .proto file.  Does nothing if the output already exists and is newer than
