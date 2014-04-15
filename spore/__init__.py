@@ -1,5 +1,6 @@
 import json
-from .spore_pb2 import Peer, Peerlist, Info, Message
+from .spore_pb2 import Peer as PeerFixme, Peerlist, Info, Message
+import random
 import traceback
 import collections
 import random
@@ -93,17 +94,26 @@ class Peer(object):
 
     # Check that we have enough room for a new connection.
     if not self.spore.outbound_sockets_semaphore.acquire(blocking=False):
+      if sock:
+        # TODO: do this properly.
+        sock.sendall("We're full")
+        sock.shutdown(SHUT_RDWR)
+        sock.close()
       return False
 
     # Check if this peer is banned.
     if self.is_banned():
       self.spore.outbound_sockets_semaphore.release()
+      if sock:
+        sock.shutdown()
+        sock.close()
       return False
 
     with self.socket_lock:
       if self.socket is not None:
         # We already have a socket, therefore we are already connected.
         self.spore.outbound_sockets_semaphore.release()
+        # TODO: increase misbehaving.
         return False
 
       # Try connecting.
@@ -178,7 +188,10 @@ class Peer(object):
       while True:
         # FIXME: self.socket could become None at any time...
         try:
-          data = self._recv(4)
+          if self.socket:
+            data = self._recv(4)
+          else:
+            data = None
           if data:
             length = int.from_bytes(data,'big')
             # TODO: check that length is not too long for our purposes.
@@ -208,6 +221,9 @@ class Peer(object):
 class Spore(object):
 
   def __init__(self, seeds=[], address=None):
+
+    # Session id
+    self.nonce = random.randint(0,2**32-1)
 
     # Reference to the main accept and connect threads.
     self.accept_thread = None
@@ -255,13 +271,36 @@ class Spore(object):
           # TODO: broadcast less frequently, not for every peer.
           self.peers[addr] = Peer(self, addr)
           self.broadcast('spore_peerlist',[address])
+    """
+    @self.handler('peer')
+    def recvpeer(peer, data):
+      peerfixme = PeerFixme()
+      peerfixme.ParseFromString(data)
+      ipstr = socket.inet_ntoa(peerfixme.ip)
+      address = (ipstr, peerfixme.port)
+      with self.peers_lock:
+        if address not in self.peers:
+          self.peers[address] = Peer(self, address)
 
-    if self.address:
-      @self.on_connect
-      def share_peer(peer):
-        address = [socket.inet_aton(self.address[0]), self.address[1].to_bytes(2,'big')]
-        self.broadcast('spore_peerlist',[address])
-      """
+    @self.handler('info')
+    def recvinfo(peer, data):
+      info = Info()
+      info.ParseFromString(data)
+      if info.nonce == self.nonce:
+        peer.disconnect()
+      else:
+        if info.HasField('port'):
+          peerfixme = PeerFixme()
+          peerfixme.ip = socket.inet_aton(socket.gethostbyname(peer.address[0]))
+          peerfixme.port = info.port
+          self.broadcast('peer',peerfixme.SerializeToString())
+
+    @self.on_connect
+    def sendinfo(peer):
+      info = Info(version=0,nonce=self.nonce)
+      if address:
+        info.port = address[1]
+      peer.send('info', info.SerializeToString())
 
   def connect_loop(self):
     """ Loops around the peer list once per second looking for peers to connect

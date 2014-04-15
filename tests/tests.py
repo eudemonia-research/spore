@@ -113,7 +113,6 @@ class TestNetworking(unittest.TestCase):
         self.assertTrue(client_received_message)
         self.assertTrue(server_received_message)
 
-    """
     def test_peerlist(self):
         new_client = Spore(seeds=[('127.0.0.1', self.port)],address=('127.0.0.1', self.port+1))
         threading.Thread(target=new_client.run).start()
@@ -122,7 +121,6 @@ class TestNetworking(unittest.TestCase):
         self.assertEqual(self.client.num_connected_peers(), 2)
         self.assertEqual(new_client.num_connected_peers(), 3)
         new_client.shutdown()
-    """
 
     def test_broadcast(self):
         self.client.shutdown()

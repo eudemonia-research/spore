@@ -10,7 +10,7 @@ message Peerlist {
 }
 
 message Info {
-  required string version  = 1;
+  required int32 version = 1;
   required fixed64 nonce = 2;
   optional int32 port = 3;
   optional Peerlist peerlist = 4;
