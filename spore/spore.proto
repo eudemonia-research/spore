@@ -15,3 +15,8 @@ message Info {
   optional int32 port = 3;
   optional Peerlist peerlist = 4;
 }
+
+message Message {
+  required string method = 1;
+  required bytes payload = 2;
+}

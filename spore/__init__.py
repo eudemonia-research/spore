@@ -1,5 +1,5 @@
 import json
-from encodium import *
+from .spore_pb2 import Peer, Peerlist, Info, Message
 import traceback
 import collections
 import random
@@ -20,10 +20,12 @@ class Address(object):
 	def __getitem__(self, key):
 		return self.t[key]
 
+"""
 class SporeMessage(Field):
   def fields():
     method = String(max_length=100)
     payload = Bytes()
+"""
 
 class Peer(object):
 
@@ -64,7 +66,7 @@ class Peer(object):
       if self.socket:
         try:
           # TODO:fix serialization...
-          data = SporeMessage.make(method=method,payload=payload).serialize()
+          data = Message(method=method,payload=payload).SerializeToString()
           length = len(data)
           self.socket.sendall(length.to_bytes(4,'big'))
           self.socket.sendall(data)
@@ -189,15 +191,16 @@ class Peer(object):
           # in case.
           self.disconnect()
           break
-        spore_message = SporeMessage.make(data)
-        funclist = self.spore.handlers.get(spore_message.method)
+        message = Message()
+        message.ParseFromString(data)
+        funclist = self.spore.handlers.get(message.method)
         if funclist is None:
           # TODO: decide whether or not to throw misbehaving here.
           pass
         else:
           for func in funclist:
             try:
-              func(self, spore_message.payload)
+              func(self, message.payload)
             except:
               traceback.print_exc()
 
