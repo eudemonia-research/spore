@@ -122,6 +122,21 @@ class TestNetworking(unittest.TestCase):
         self.assertEqual(new_client.num_connected_peers(), 3)
         new_client.shutdown()
 
+    def test_protobufs(self):
+        called = False
+        class MockProtobuf(object):
+            def __init__(self):
+                x=1234
+            def ParseFromString(self, data):
+                nonlocal called
+                called=True
+        @self.client.handler('test', MockProtobuf)
+        def donothing(peer, obj):
+            self.assertEqual(obj.x, 1234)
+        self.server.broadcast('test', b'this gets ignored')
+        time.sleep(0.2)
+        self.assertTrue(called)
+
     def test_broadcast(self):
         self.client.shutdown()
         time.sleep(0.1)

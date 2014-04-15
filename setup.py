@@ -49,7 +49,7 @@ class build_py(_build_py):
     _build_py.run(self)
 
 setup(name='spore',
-      version='0.9.2',
+      version='0.9.3',
       description='Simple P2P Framework',
       author='Kitten Tofu',
       author_email='kitten@eudemonia.io',

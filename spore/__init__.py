@@ -211,9 +211,14 @@ class Peer(object):
           # TODO: decide whether or not to throw misbehaving here.
           pass
         else:
-          for func in funclist:
+          for func, cls in funclist:
             try:
-              func(self, message.payload)
+              if cls:
+                obj = cls()
+                obj.ParseFromString(message.payload)
+                func(self, obj)
+              else:
+                func(self, message.payload)
             except:
               traceback.print_exc()
 
@@ -374,9 +379,9 @@ class Spore(object):
     """ Returns the number of connected peers """
     return len(self.all_connected_peers())
 
-  def handler(self, method):
+  def handler(self, method, cls=None):
     def wrapper(func):
-      self.handlers[method].append(func)
+      self.handlers[method].append((func, cls))
     return wrapper
 
   def on_connect(self, func):
