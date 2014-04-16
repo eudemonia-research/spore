@@ -29,9 +29,9 @@ def generate_proto(source):
           "or install the binary package.\n")
       sys.exit(-1)
 
-  protoc_command = [ protoc, "-I.", "--python_out=.", source ]
-  if subprocess.call(protoc_command) != 0:
-    sys.exit(-1)
+    protoc_command = [ protoc, "-I.", "--python_out=.", source ]
+    if subprocess.call(protoc_command) != 0:
+      sys.exit(-1)
 
 
 class clean(_clean):
