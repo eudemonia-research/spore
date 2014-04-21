@@ -1,5 +1,6 @@
 import json
-from .spore_pb2 import Peer as PeerFixme, Peerlist, Info, Message
+#from .spore_pb2 import Peer as PeerFixme, Peerlist, Info, Message
+from encodium import *
 import random
 import traceback
 import collections
@@ -13,20 +14,22 @@ import time
 MAX_OUTBOUND_CONNECTIONS = 50
 MAX_INBOUND_CONNECTIONS = 50
 
-class Address(object):
-	def __init__(self, address):
-		self.host = socket.inet_ntoa(address[0])
-		self.port = int.from_bytes(address[1],'big')
-		self.t = (self.host, self.port)
-	def __getitem__(self, key):
-		return self.t[key]
-
-"""
-class SporeMessage(Field):
+class Message(Field):
   def fields():
     method = String(max_length=100)
     payload = Bytes()
-"""
+
+class Address(Field):
+  def fields():
+    ip = Bytes(max_length=16)
+    port = Integer(bits=16, signed=False)
+
+class Info(Field):
+  def fields():
+    version = Integer(bits=32, signed=False)
+    nonce = Integer(bits=42, signed=False)
+    port = Integer(bits=16, signed=False, optional=True)
+    peerlist = List(Address(), max_length=1000, default=[])
 
 class Peer(object):
 
@@ -67,7 +70,7 @@ class Peer(object):
       if self.socket:
         try:
           # TODO:fix serialization...
-          data = Message(method=method,payload=payload).SerializeToString()
+          data = Message.make(method=method,payload=payload).serialize()
           length = len(data)
           self.socket.sendall(length.to_bytes(4,'big'))
           self.socket.sendall(data)
@@ -204,8 +207,7 @@ class Peer(object):
           # in case.
           self.disconnect()
           break
-        message = Message()
-        message.ParseFromString(data)
+        message = Message.make(data)
         funclist = self.spore.handlers.get(message.method)
         if funclist is None:
           # TODO: decide whether or not to throw misbehaving here.
@@ -214,8 +216,7 @@ class Peer(object):
           for func, cls in funclist:
             try:
               if cls:
-                obj = cls()
-                obj.ParseFromString(message.payload)
+                obj = cls.make(message.payload)
                 func(self, obj)
               else:
                 func(self, message.payload)
@@ -261,51 +262,31 @@ class Spore(object):
     self.outbound_sockets_semaphore = threading.BoundedSemaphore(MAX_OUTBOUND_CONNECTIONS)
 
 
-    """
-    @self.handler('spore_peerlist')
-    def peerlist(peer, payload):
-
-      # TODO: make type checking/validation of data easier.
-
-      for address in payload:
-        # TODO: make an Address class that autoserializes.
-        addr = Address(address).t
-        if (addr not in self.peers) and addr != self.address:
-          # TODO: cache these based on their compact representation, not their
-          # string representation
-          # TODO: broadcast less frequently, not for every peer.
-          self.peers[addr] = Peer(self, addr)
-          self.broadcast('spore_peerlist',[address])
-    """
-    @self.handler('peer')
-    def recvpeer(peer, data):
-      peerfixme = PeerFixme()
-      peerfixme.ParseFromString(data)
-      ipstr = socket.inet_ntoa(peerfixme.ip)
-      address = (ipstr, peerfixme.port)
+    @self.handler('peer', Address)
+    def recvpeer(peer, address):
+      ipstr = socket.inet_ntoa(address.ip)
+      address = (ipstr, address.port)
       with self.peers_lock:
         if address not in self.peers:
           self.peers[address] = Peer(self, address)
 
-    @self.handler('info')
-    def recvinfo(peer, data):
-      info = Info()
-      info.ParseFromString(data)
+    @self.handler('info', Info)
+    def recvinfo(peer, info):
       if info.nonce == self.nonce:
         peer.disconnect()
       else:
-        if info.HasField('port'):
-          peerfixme = PeerFixme()
-          peerfixme.ip = socket.inet_aton(socket.gethostbyname(peer.address[0]))
-          peerfixme.port = info.port
-          self.broadcast('peer',peerfixme.SerializeToString())
+        if info.port is not None:
+          ip = socket.inet_aton(socket.gethostbyname(peer.address[0]))
+          port = info.port
+          peerfixme = Address.make(ip=ip,port=port)
+          self.broadcast('peer',peerfixme.serialize())
 
     @self.on_connect
     def sendinfo(peer):
-      info = Info(version=0,nonce=self.nonce)
+      info = Info.make(version=0,nonce=self.nonce)
       if address:
         info.port = address[1]
-      peer.send('info', info.SerializeToString())
+      peer.send('info', info.serialize())
 
   def connect_loop(self):
     """ Loops around the peer list once per second looking for peers to connect

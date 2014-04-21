@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 
 from distutils.core import setup
+
+'''
 from distutils.command.build_py import build_py as _build_py
 from distutils.command.clean import clean as _clean
 import subprocess, os, sys
@@ -47,6 +49,7 @@ class build_py(_build_py):
 
     # _build_py is an old-style class, so super() doesn't work.
     _build_py.run(self)
+'''
 
 setup(name='spore',
       version='0.9.3',
@@ -55,5 +58,6 @@ setup(name='spore',
       author_email='kitten@eudemonia.io',
       url='http://eudemonia.io/spore/',
       packages=['spore'],
-      cmdclass={'build_py': build_py, 'clean': clean},
+      install_requires=['encodium'],
+      #cmdclass={'build_py': build_py, 'clean': clean},
      )

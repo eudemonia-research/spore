@@ -122,6 +122,8 @@ class TestNetworking(unittest.TestCase):
         self.assertEqual(new_client.num_connected_peers(), 3)
         new_client.shutdown()
 
+    '''
+    # Not using Protobufs anymore, going with encodium.
     def test_protobufs(self):
         called = False
         class MockProtobuf(object):
@@ -136,6 +138,7 @@ class TestNetworking(unittest.TestCase):
         self.server.broadcast('test', b'this gets ignored')
         time.sleep(0.2)
         self.assertTrue(called)
+    '''
 
     def test_broadcast(self):
         self.client.shutdown()
