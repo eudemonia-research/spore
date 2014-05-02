@@ -1,412 +1,212 @@
-import json
-#from .spore_pb2 import Peer as PeerFixme, Peerlist, Info, Message
-from encodium import *
-import random
+import asyncio
 import traceback
-import collections
-import random
-import signal
+import threading
 import sys
 import socket
-import threading
-import time
-
-MAX_OUTBOUND_CONNECTIONS = 50
-MAX_INBOUND_CONNECTIONS = 50
-
-class Message(Field):
-  def fields():
-    method = String(max_length=100)
-    payload = Bytes()
-
-class Address(Field):
-  def fields():
-    ip = Bytes(max_length=16)
-    port = Integer(bits=16, signed=False)
-
-class Info(Field):
-  def fields():
-    version = Integer(bits=32, signed=False)
-    nonce = Integer(bits=42, signed=False)
-    port = Integer(bits=16, signed=False, optional=True)
-    peerlist = List(Address(), max_length=1000, default=[])
-
-class Peer(object):
-
-  def __init__(self, spore, address, misbehavior=0):
-
-    # Reference to this peer's main recv_loop thread
-    self.recv_loop_thread = None
-
-    # Lock for when sending on this peer's socket.
-    self.send_lock = threading.Lock()
-
-    # Lock for when recv'ing on this peer's socket.
-    self.recv_lock = threading.Lock()
-
-    # Lock for when either connecting or disconnecting.
-    self.socket_lock = threading.Lock()
-
-    # Reference to the spore instance (e.g. for connection limit semaphores)
-    self.spore = spore
-
-    # The socket that this peer is communicating over.
-    self.socket = None
-
-    # The address of this peer as a tuple (host, port)
-    self.address = address
-
-    # This misbehavior of this peer.
-    # FIXME: This should be per host.
-    self.misbehavior = misbehavior
-    
-    # A dictionary which can be written to for general use.
-    self.data = {}
-
-  def send(self, method, payload=b''):
-    # TODO: handle socket error
-    with self.send_lock:
-      # TODO: fix concurrency issues here with self.socket_lock
-      if self.socket:
-        try:
-          # TODO:fix serialization...
-          data = Message.make(method=method,payload=payload).serialize()
-          length = len(data)
-          self.socket.sendall(length.to_bytes(4,'big'))
-          self.socket.sendall(data)
-        except (BrokenPipeError, OSError):
-          self.disconnect()
-
-  def is_connected(self):
-    """ Returns if this peer is connected. Only valid at the time of the call,
-        as the socket may close at any time.
-    """
-    return self.socket is not None
-
-  def is_banned(self):
-    return self.misbehavior >= 100
-
-  def attempt_connection(self, sock=None):
-    """ Attempts a connection if it is appropriate.
-        Returns True if a successful connection is made
-        Otherwise returns False
-
-        If a sock is provided then that socket is used for the connection.
-        If the connection is unsuccessful the socket is returned untouched.
-    """
-
-    # Check that we have enough room for a new connection.
-    if not self.spore.outbound_sockets_semaphore.acquire(blocking=False):
-      if sock:
-        # TODO: do this properly.
-        sock.sendall("We're full")
-        sock.shutdown(SHUT_RDWR)
-        sock.close()
-      return False
-
-    # Check if this peer is banned.
-    if self.is_banned():
-      self.spore.outbound_sockets_semaphore.release()
-      if sock:
-        sock.shutdown()
-        sock.close()
-      return False
-
-    with self.socket_lock:
-      if self.socket is not None:
-        # We already have a socket, therefore we are already connected.
-        self.spore.outbound_sockets_semaphore.release()
-        # TODO: increase misbehaving.
-        return False
-
-      # Try connecting.
-      try:
-        if sock:
-          self.socket = sock
-        else:
-          self.socket = socket.create_connection(self.address)
-      except ConnectionRefusedError:
-        self.misbehavior += 30
-        self.spore.outbound_sockets_semaphore.release()
-        return False
-
-      # Run the on_connect handler threads in series.
-      for func in self.spore.on_connect_handlers:
-        try:
-          func(self)
-        except:
-          traceback.print_exc()
-
-      # Okay, we are connected, start this peer's main thread.
-      self.recv_loop_thread = threading.Thread(target=self.recv_loop)
-      self.recv_loop_thread.start()
-      return True
-
-
-  def disconnect(self):
-    # TODO: handle socket errors
-    with self.socket_lock:
-      if self.socket is not None:
-        
-        # catch remote shutdown
-        try:
-          self.socket.shutdown(socket.SHUT_RDWR)
-        except OSError as e:
-          if e.errno != 107: # errno.ENOTCONN
-            raise e
-        
-        self.socket.close()
-        self.socket = None
-
-
-        # Run the on_disconnect handler threads in series.
-        for func in self.spore.on_disconnect_handlers:
-          try:
-            func(self)
-          except:
-            traceback.print_exc()
-
-        # FIXME: This part doesn't appear to be working
-        #
-        #current_thread = threading.current_thread()
-        #if self.recv_loop_thread and current_thread != self.recv_loop_thread:
-        #  self.recv_loop_thread.join()
-        #  self.recv_loop_thread = None
-
-  def _recv(self, amount):
-    data = []
-    while amount > 0:
-      segment = self.socket.recv(amount)
-      if segment == b'':
-        return None
-      amount -= len(segment)
-      data.append(segment)
-    return b''.join(data)
-
-  def recv_loop(self):
-    # This should only be called once per peer..
-    assert self.recv_lock.acquire(blocking=False)
-    self.recv_lock.release()
-    with self.recv_lock:
-      while True:
-        # FIXME: self.socket could become None at any time...
-        try:
-          if self.socket:
-            data = self._recv(4)
-          else:
-            data = None
-          if data:
-            length = int.from_bytes(data,'big')
-            # TODO: check that length is not too long for our purposes.
-            data = self._recv(length)
-        except ConnectionResetError:
-          self.disconnect()
-          break
-        if data is None:
-          # We still don't know if we closed it or they did, so disconnect just
-          # in case.
-          self.disconnect()
-          break
-        message = Message.make(data)
-        funclist = self.spore.handlers.get(message.method)
-        if funclist is None:
-          # TODO: decide whether or not to throw misbehaving here.
-          pass
-        else:
-          for func, cls in funclist:
-            try:
-              if cls:
-                obj = cls.make(message.payload)
-                func(self, obj)
-              else:
-                func(self, message.payload)
-            except:
-              traceback.print_exc()
+import collections
+import random
+from .fields import Message, Peer, Info
 
 
 class Spore(object):
+    class Protocol(asyncio.Protocol):
+        def __init__(self, spore):
+            self._spore = spore
+            self._buffer = bytearray()
+            self.data = dict
+            self._transport = None
 
-  def __init__(self, seeds=[], address=None):
+        def connection_made(self, transport):
+            # TODO: check if we're full, and let them know.
+            self._spore._protocols.append(self)
+            self.address = transport.get_extra_info('peername')
+            assert self._transport is None
+            self._transport = transport
+            for callback in self._spore._on_connect_callbacks:
+                self._try_except(callback)
 
-    # Session id
-    self.nonce = random.randint(0,2**32-1)
+        def send(self, method, payload=b''):
+            if hasattr(payload, 'serialize'):
+                payload = payload.serialize()
+            message = Message.make(method=method, payload=payload).serialize()
+            self._transport.write(len(message).to_bytes(4, 'big'))
+            self._transport.write(message)
 
-    # Reference to the main accept and connect threads.
-    self.accept_thread = None
-    self.connect_thread = None
+        def data_received(self, data):
+            for byte in data:
+                self._buffer.append(byte)
+            length = len(self._buffer)
+            if length > 4 and length - 4 == int.from_bytes(self._buffer[0:4], 'big'):
+                message = Message.make(bytes(self._buffer[4:]))
+                for callback, cls in self._spore._on_message_callbacks[message.method]:
+                    if cls:
+                        self._try_except(callback, cls.make(message.payload))
+                    else:
+                        self._try_except(callback, message.payload)
+                self._buffer.clear()
 
-    # Boolean representing if the server is running.
-    self.running = False
+        def connection_lost(self, exc):
+            for callback in self._spore._on_disconnect_callbacks:
+                self._try_except(callback)
+            self._spore._protocols.remove(self)
+            if len(self._spore._protocols) == 0:
+                asyncio.Task(self._spore._notify_protocols_empty(), loop=self._spore._loop)
 
-    # The socket that this instance is listening on.
-    self.server = None
+        def _try_except(self, callback, *args, **kwargs):
+            try:
+                callback(self, *args, **kwargs)
+            except:
+                traceback.print_exc()
 
-    # The address that the server should listen on as a (host, port) tuple.
-    self.address = address
+    def __init__(self, seeds=[], address=None):
+        self._main_thread = None
+        self._protocols = []
+        self._clients = []
+        self._server = None
+        self._known_addresses = seeds
+        self._address = address
+        self._main_task = None
+        self._on_connect_callbacks = []
+        self._on_disconnect_callbacks = []
+        self._on_message_callbacks = collections.defaultdict(list)
+        self.nonce = random.randint(0,2**32-1)
 
-    # Handlers of messages for this instance.
-    self.handlers = collections.defaultdict(list)
-    self.on_connect_handlers = []
-    self.on_disconnect_handlers = []
-
-    # Dictionary mapping (host, port) -> peer.
-    self.peers = {}
-    for addr in seeds:
-      self.peers[addr] = Peer(self, addr)
-
-    # Lock for the peers dictionary.
-    self.peers_lock = threading.Lock()
-
-    # Semaphore to limit the number of connections.
-    # TODO: add inbound socket semaphore, currently all connections use this outbound one.
-    self.outbound_sockets_semaphore = threading.BoundedSemaphore(MAX_OUTBOUND_CONNECTIONS)
+        @self.on_message('peer', Peer)
+        def receive_peer(from_peer, new_peer):
+            # TODO: track which peers know about which peers to reduce traffic by a factor of two.
+            # TODO: Do not relay this peer if it's on a network that is unreachable.
+            address = (socket.inet_ntoa(new_peer.ip), new_peer.port)
+            if address not in self._known_addresses:
+                self.broadcast('peer', new_peer, exclude=from_peer)
+                self._known_addresses.append(address)
 
 
-    @self.handler('peer', Address)
-    def recvpeer(peer, address):
-      ipstr = socket.inet_ntoa(address.ip)
-      address = (ipstr, address.port)
-      with self.peers_lock:
-        if address not in self.peers:
-          self.peers[address] = Peer(self, address)
+        @self.on_message('info', Info)
+        def info(peer, info):
+            if info.port:
+                receive_peer(peer, Peer.make(ip=socket.inet_aton(peer.address[0]), port=info.port))
 
-    @self.handler('info', Info)
-    def recvinfo(peer, info):
-      if info.nonce == self.nonce:
-        peer.disconnect()
-      else:
-        if info.port is not None:
-          ip = socket.inet_aton(socket.gethostbyname(peer.address[0]))
-          port = info.port
-          peerfixme = Address.make(ip=ip,port=port)
-          self.broadcast('peer',peerfixme.serialize())
+        @self.on_connect
+        def share_info(peer):
+            info = Info.make(version=0, nonce=self.nonce)
+            if self._address:
+                info.port = self._address[1]
+            peer.send('info', info)
 
-    @self.on_connect
-    def sendinfo(peer):
-      info = Info.make(version=0,nonce=self.nonce)
-      if address:
-        info.port = address[1]
-      peer.send('info', info.serialize())
 
-  def connect_loop(self):
-    """ Loops around the peer list once per second looking for peers to connect
-        to, if we need to """
+    def on_connect(self, func):
+        self._on_connect_callbacks.append(func)
+        return func
 
-    while self.running:
-      # Acquire and release this semaphore so that we're not continually
-      # creating an array of all peers whilst we're sufficiently connected.
-      if not self.outbound_sockets_semaphore.acquire(timeout=0.1):
-        continue
-      self.outbound_sockets_semaphore.release()
+    def on_disconnect(self, func):
+        self._on_disconnect_callbacks.append(func)
+        return func
 
-      peer = None
+    def on_message(self, method, field=None):
+        def wrapper(func):
+            self._on_message_callbacks[method].append((func, field))
+            return func
 
-      with self.peers_lock:
-        # TODO: make this loop more efficient by maining a peer list that is
-        # actually a list. The throttling per IP is another thing altogether.
-        peers = self.peers.items()
-        if len(peers) != 0:
-          addr, peer = random.choice(list(peers))
-      if peer:
-        peer.attempt_connection()
-      time.sleep(0.1)
+        return wrapper
 
-  def incoming_connection_handler(self, socket, address):
-    """ Handler for an outbound socket to a peer """
-    self.peers_lock.acquire()
-    if address not in self.peers:
-      self.peers[address] = Peer(self, address)
-    peer = self.peers[address]
-    self.peers_lock.release()
+    def handler(self, method):
+        return self.on_message(method)
 
-    peer.attempt_connection(socket)
+    def broadcast(self, method, data, exclude=[]):
+        if hasattr(data, 'serialize'):
+            data = data.serialize()
+        for protocol in self._protocols:
+            if not isinstance(exclude, list):
+                exclude = [exclude]
+            if protocol not in exclude:
+                protocol.send(method, data)
 
-  def accept_loop(self):
-    """ Listens for new connections """
-    self.server = socket.socket()
-    # NOTE: there should be a way to get this to work without this option...
-    self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    self.server.bind(self.address)
-    self.server.listen(8)
-    while self.running:
-      try:
-        sock, address = self.server.accept()
-      except OSError as e:
-        if e.errno == 22: # Server shutdown
-          break
-        print("Socket error during accept: " + str(e))
-        time.sleep(1)
-        continue
-      threading.Thread(target=self.incoming_connection_handler, args=(sock, address)).start()
-    
-  def random_peer(self):
-    """ Returns a random peer """
-    peers = self.all_connected_peers()
-    if len(peers) > 0:
-        return random.choice(peers)
-    return None
+    def num_connected_peers(self):
+        return len(self._protocols)
 
-  def all_connected_peers(self):
-    """ Returns a list of connected peers """
-    ret = []
-    self.peers_lock.acquire()
-    for address, peer in self.peers.items():
-      if peer.is_connected():
-        ret.append(peer)
-    self.peers_lock.release()
-    return ret
+    def run(self):
 
-  def num_connected_peers(self):
-    """ Returns the number of connected peers """
-    return len(self.all_connected_peers())
+        # First, set the event loop.
+        self._loop = asyncio.new_event_loop()
+        self._protocols_empty_cv = asyncio.Condition(loop=self._loop)
+        self._main_thread = threading.current_thread()
 
-  def handler(self, method, cls=None):
-    def wrapper(func):
-      self.handlers[method].append((func, cls))
-    return wrapper
+        # Sanity check.
+        assert self._main_task is None
 
-  def on_connect(self, func):
-    self.on_connect_handlers.append(func)
+        # Set up main task.
+        coroutines = [self._create_server(), self._connect_loop()]
+        self._main_task = asyncio.Task(asyncio.wait(coroutines, loop=self._loop), loop=self._loop)
 
-  def on_disconnect(self, func):
-    self.on_disconnect_handlers.append(func)
+        # Run them
+        try:
+            self._loop.run_until_complete(self._main_task)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            self._loop.run_until_complete(self._clean_up())
 
-  def broadcast(self, method, payload):
-    """ Broadcasts data as a json object to all connected peers """
-    with self.peers_lock:
-      for addr, peer in self.peers.items():
-        if peer.is_connected():
-          # FIXME: peer might become disconnected =/
-          peer.send(method, payload)
+        self._main_task = None
+        self._loop.close()
 
-  def run(self):
-    self.running = True
-    self.connect_thread = threading.Thread(target=self.connect_loop)
-    self.connect_thread.start()
-    if self.address:
-      self.accept_thread = threading.Thread(target=self.accept_loop)
-      self.accept_thread.start()
+    def shutdown(self):
+        if self._main_task is None:
+            sys.stderr.write("Warning: shutdown called on spore instance that is stopped.\n")
+        else:
+            self._loop.call_soon_threadsafe(self._main_task.cancel)
+            self._main_thread.join()
+            self._main_thread = None
 
-    try:
-      if self.address:
-        self.accept_thread.join()
-      self.connect_thread.join()
-    except KeyboardInterrupt:
-      print("Received keyboard interrupt, shutting down...")
-      self.shutdown()
+    def _protocol_factory(self):
+        return Spore.Protocol(self)
 
-  def shutdown(self):
-    # Set conditions to stop the accept/connect threads:
-    self.running = False
+    def _should_connect_to(self, address):
+        for protocol in self._protocols:
+            if protocol.address == address:
+                return False
+            # TODO: check other ways in which this peer might prevent us from connecting to address
+        # TODO: check if address is banned.
+        return True
 
-    if self.accept_thread:
-      self.server.shutdown(socket.SHUT_RDWR)
-      self.server.close()
-      self.server = None
-      self.accept_thread.join()
-    self.connect_thread.join()
+    @asyncio.coroutine
+    def _clean_up(self):
+        for protocol in self._protocols:
+            protocol._transport.close()
+        if self._server:
+            self._server.close()
+        yield from self._wait_protocols_empty()
 
-    # Disconnect all peers:
-    with self.peers_lock:
-      for addr, peer in self.peers.items():
-        peer.disconnect()
+    @asyncio.coroutine
+    def _connect_loop(self):
+        while True:
+            time_to_sleep = 0.1
+
+            # Try connecting to all peers.
+            for address in self._known_addresses:
+                if self._should_connect_to(address):
+                    try:
+                        result = yield from self._loop.create_connection(self._protocol_factory, address[0], address[1])
+                    except ConnectionRefusedError:
+                        # If there's something to try that failed, try again real quick.
+                        # This is mostly useful for tests.
+                        time_to_sleep = 0.05
+                        # TODO: increase misbehaving for that peer.
+                        pass
+
+            yield from asyncio.sleep(time_to_sleep, loop=self._loop)
+
+    @asyncio.coroutine
+    def _create_server(self):
+        if self._address:
+            #print("Listening on",self._address)
+            self._server = yield from self._loop.create_server(self._protocol_factory, *self._address)
+            #print('serving on {}'.format(self._server.sockets[0].getsockname()))
+
+    @asyncio.coroutine
+    def _wait_protocols_empty(self):
+        if len(self._protocols) != 0:
+            with (yield from self._protocols_empty_cv):
+                yield from  self._protocols_empty_cv.wait()
+
+    @asyncio.coroutine
+    def _notify_protocols_empty(self):
+        with (yield from self._protocols_empty_cv):
+            self._protocols_empty_cv.notify_all()

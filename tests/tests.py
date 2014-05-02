@@ -5,6 +5,37 @@ from spore import Spore
 import time
 import random
 
+class TestThreading(unittest.TestCase):
+
+    def test_threading(self):
+        started = threading.active_count()
+        port = random.randint(10000, 60000)
+        server = Spore(seeds=[], address=('127.0.0.1', port))
+        threading.Thread(target=server.run).start()
+        time.sleep(0.15)
+        self.assertTrue(threading.active_count() > started)
+        server.shutdown()
+        time.sleep(0.15)
+        self.assertEqual(threading.active_count(), started)
+
+    def test_two_threading(self):
+        started = threading.active_count()
+        port = random.randint(10000, 60000)
+        server = Spore(seeds=[], address=('127.0.0.1', port))
+        threading.Thread(target=server.run).start()
+        time.sleep(0.15)
+        ac = threading.active_count()
+        self.assertTrue(ac > started)
+        client = Spore(seeds=[('127.0.0.1',port)])
+        threading.Thread(target=client.run).start()
+        time.sleep(0.15)
+        self.assertTrue(threading.active_count() > ac)
+        server.shutdown()
+        time.sleep(0.15)
+        client.shutdown()
+        time.sleep(0.15)
+        self.assertEqual(threading.active_count(), started)
+
 class TestNetworking(unittest.TestCase):
 
     def setUp(self):
@@ -117,10 +148,12 @@ class TestNetworking(unittest.TestCase):
         new_client = Spore(seeds=[('127.0.0.1', self.port)],address=('127.0.0.1', self.port+1))
         threading.Thread(target=new_client.run).start()
         # Wait for ages here because things need to propagate.
-        time.sleep(0.8)
-        self.assertEqual(self.client.num_connected_peers(), 2)
-        self.assertEqual(new_client.num_connected_peers(), 3)
-        new_client.shutdown()
+        time.sleep(0.2)
+        try:
+            self.assertEqual(self.client.num_connected_peers(), 2)
+            self.assertEqual(new_client.num_connected_peers(), 3)
+        finally:
+            new_client.shutdown()
 
     '''
     # Not using Protobufs anymore, going with encodium.
@@ -156,7 +189,7 @@ class TestNetworking(unittest.TestCase):
         #print('broadcast3')
         self.server.broadcast('test',b'test')
         time.sleep(0.1)
-        # this will either finish or not - locking error
+        # this will either finish or not - locking erbytesror
         # no asserts
         
     def test_repeatConnections(self):
