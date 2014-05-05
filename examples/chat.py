@@ -6,6 +6,7 @@ from spore import Spore
 
 from encodium import *
 
+# the Field class comes from encodium and allows for nice serialization.
 class ChatMessage(Field):
 
   def fields():
