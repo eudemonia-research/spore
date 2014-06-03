@@ -145,15 +145,30 @@ class TestNetworking(unittest.TestCase):
         self.assertTrue(server_received_message)
 
     def test_peerlist(self):
-        new_client = Spore(seeds=[('127.0.0.1', self.port)],address=('127.0.0.1', self.port+1))
-        threading.Thread(target=new_client.run).start()
-        # Wait for ages here because things need to propagate.
-        time.sleep(0.2)
+        new_clients = [Spore(seeds=[('127.0.0.1', self.port)],address=('127.0.0.1', self.port+1+i)) for i in range(9)]
+        for new_client in new_clients:
+            threading.Thread(target=new_client.run).start()
+        # Wait for a while because things need to propagate.
+        time.sleep(15)
         try:
-            self.assertEqual(self.client.num_connected_peers(), 2)
-            self.assertEqual(new_client.num_connected_peers(), 3)
+            self.assertEqual(self.client.num_connected_peers(), 10)
         finally:
-            new_client.shutdown()
+            for new_client in new_clients:
+                new_client.shutdown()
+
+    ''' TODO: this test
+    def test_overload(self):
+        new_clients = [Spore(seeds=[('127.0.0.1', self.port)],address=('127.0.0.1', self.port+1+i)) for i in range(9)]
+        for new_client in new_clients:
+            threading.Thread(target=new_client.run).start()
+        # Wait for a while because things need to propagate.
+        time.sleep(20)
+        try:
+            self.assertEqual(self.client.num_connected_peers(), 10)
+        finally:
+            for new_client in new_clients:
+                new_client.shutdown()
+    '''
 
     '''
     # Not using Protobufs anymore, going with encodium.

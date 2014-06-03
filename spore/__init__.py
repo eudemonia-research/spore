@@ -5,8 +5,8 @@ import sys
 import socket
 import collections
 import random
+import encodium
 from .fields import Message, Peer, Info
-
 
 class Spore(object):
     class Protocol(asyncio.Protocol):
@@ -35,15 +35,18 @@ class Spore(object):
         def data_received(self, data):
             for byte in data:
                 self._buffer.append(byte)
-            length = len(self._buffer)
-            if length > 4 and length - 4 == int.from_bytes(self._buffer[0:4], 'big'):
-                message = Message.make(bytes(self._buffer[4:]))
-                for callback, cls in self._spore._on_message_callbacks[message.method]:
-                    if cls:
-                        self._try_except(callback, cls.make(message.payload))
-                    else:
-                        self._try_except(callback, message.payload)
-                self._buffer.clear()
+                length = len(self._buffer)
+                if length > 4 and length - 4 == int.from_bytes(self._buffer[0:4], 'big'):
+                    message = Message.make(bytes(self._buffer[4:]))
+                    for callback, deserialize in self._spore._on_message_callbacks[message.method]:
+                        if deserialize:
+                            if deserialize.__class__ == type and issubclass(deserialize, encodium.Field):
+                                sys.stderr.write("Warning: passing encodium fields into spore is deprecated and will be removed in version 1.0\n")
+                                deserialize = deserialize.make
+                            self._try_except(callback, deserialize(message.payload))
+                        else:
+                            self._try_except(callback, message.payload)
+                    self._buffer.clear()
 
         def connection_lost(self, exc):
             for callback in self._spore._on_disconnect_callbacks:
@@ -59,11 +62,14 @@ class Spore(object):
                 traceback.print_exc()
 
     def __init__(self, seeds=[], address=None):
+        self._loop = None
         self._main_thread = None
         self._protocols = []
         self._clients = []
         self._server = None
         self._known_addresses = seeds
+        self._try_new_connections = None
+        self._banned_addresses = []
         self._address = address
         self._main_task = None
         self._on_connect_callbacks = []
@@ -71,7 +77,7 @@ class Spore(object):
         self._on_message_callbacks = collections.defaultdict(list)
         self.nonce = random.randint(0,2**32-1)
 
-        @self.on_message('peer', Peer)
+        @self.on_message('peer', Peer.make)
         def receive_peer(from_peer, new_peer):
             # TODO: track which peers know about which peers to reduce traffic by a factor of two.
             # TODO: Do not relay this peer if it's on a network that is unreachable.
@@ -79,12 +85,20 @@ class Spore(object):
             if address not in self._known_addresses:
                 self.broadcast('peer', new_peer, exclude=from_peer)
                 self._known_addresses.append(address)
+                self._try_new_connections.set()
 
 
-        @self.on_message('info', Info)
+        @self.on_message('info', Info.make)
         def info(peer, info):
-            if info.port:
-                receive_peer(peer, Peer.make(ip=socket.inet_aton(peer.address[0]), port=info.port))
+            if info.nonce == self.nonce:
+                if (peer.address[0], info.port) not in self._banned_addresses:
+                    self._banned_addresses.append((peer.address[0], info.port))
+                peer._transport.close()
+            else:
+                if info.port:
+                    receive_peer(peer, Peer.make(ip=socket.inet_aton(peer.address[0]), port=info.port))
+                for address in self._known_addresses:
+                    peer.send('peer', Peer.make(ip=socket.inet_aton(address[0]), port=address[1]))
 
         @self.on_connect
         def share_info(peer):
@@ -102,9 +116,9 @@ class Spore(object):
         self._on_disconnect_callbacks.append(func)
         return func
 
-    def on_message(self, method, field=None):
+    def on_message(self, method, deserialize=None):
         def wrapper(func):
-            self._on_message_callbacks[method].append((func, field))
+            self._on_message_callbacks[method].append((func, deserialize))
             return func
 
         return wrapper
@@ -128,6 +142,8 @@ class Spore(object):
 
         # First, set the event loop.
         self._loop = asyncio.new_event_loop()
+        self._try_new_connections = asyncio.Event(loop=self._loop)
+        self._try_new_connections.set()
         self._protocols_empty_cv = asyncio.Condition(loop=self._loop)
         self._main_thread = threading.current_thread()
 
@@ -146,8 +162,10 @@ class Spore(object):
 
         self._main_task = None
         self._loop.close()
+        self._loop = None
 
     def shutdown(self):
+        assert self._loop is not None, "spore instance run() must be called before shutdown()"
         if self._main_task is None:
             sys.stderr.write("Warning: shutdown called on spore instance that is stopped.\n")
         else:
@@ -159,11 +177,12 @@ class Spore(object):
         return Spore.Protocol(self)
 
     def _should_connect_to(self, address):
+        if address in self._banned_addresses:
+            return False
         for protocol in self._protocols:
             if protocol.address == address:
                 return False
             # TODO: check other ways in which this peer might prevent us from connecting to address
-        # TODO: check if address is banned.
         return True
 
     @asyncio.coroutine
@@ -177,7 +196,10 @@ class Spore(object):
     @asyncio.coroutine
     def _connect_loop(self):
         while True:
-            time_to_sleep = 0.1
+            yield from self._try_new_connections.wait()
+            self._try_new_connections.clear()
+
+            try_again = False
 
             # Try connecting to all peers.
             for address in self._known_addresses:
@@ -187,11 +209,13 @@ class Spore(object):
                     except ConnectionRefusedError:
                         # If there's something to try that failed, try again real quick.
                         # This is mostly useful for tests.
-                        time_to_sleep = 0.05
+                        try_again = True
+                        # TODO: mark that this peer should not be tried for a while
+                        #       (perhaps there is a better way to do this logic anyway, on a per-known-address basis?)
                         # TODO: increase misbehaving for that peer.
-                        pass
 
-            yield from asyncio.sleep(time_to_sleep, loop=self._loop)
+            if try_again:
+                self._loop.call_later(0.01, self._try_new_connections.set)
 
     @asyncio.coroutine
     def _create_server(self):
