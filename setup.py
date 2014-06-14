@@ -9,6 +9,6 @@ setup(name='spore',
       author_email='kitten@eudemonia.io',
       url='http://eudemonia.io/spore/',
       packages=['spore'],
-      install_requires=['encodium'],
+      requires='encodium',
       #cmdclass={'build_py': build_py, 'clean': clean},
      )
