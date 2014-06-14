@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
+from setuptools import setup
 
 setup(name='spore',
       version='0.9.4',
@@ -9,6 +9,6 @@ setup(name='spore',
       author_email='kitten@eudemonia.io',
       url='http://eudemonia.io/spore/',
       packages=['spore'],
-      requires='encodium',
+      install_requires=['encodium'],
       #cmdclass={'build_py': build_py, 'clean': clean},
      )
