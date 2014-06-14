@@ -13,7 +13,7 @@ class Spore(object):
         def __init__(self, spore):
             self._spore = spore
             self._buffer = bytearray()
-            self.data = dict
+            self.data = dict()
             self._transport = None
 
         def connection_made(self, transport):
