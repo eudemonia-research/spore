@@ -23,10 +23,10 @@ class Spore(object):
             assert self._transport is None
             self._transport = transport
 
-            info = Info.make(version=0, nonce=self.nonce)
-            if self._address:
-                info.port = self._address[1]
-            peer.send('spore_info', info)
+            info = Info.make(version=0, nonce=self._spore._nonce)
+            if self._spore._address:
+                info.port = self._spore._address[1]
+            self.send('spore_info', info)
 
 
         def send(self, method, payload=b''):
@@ -47,23 +47,17 @@ class Spore(object):
                             if deserialize.__class__ == type and issubclass(deserialize, encodium.Field):
                                 sys.stderr.write("Warning: passing encodium fields into spore is deprecated and will be removed in version 1.0\n")
                                 deserialize = deserialize.make
-                            self._try_except(callback, deserialize(message.payload))
+                            callback(self, deserialize(message.payload))
                         else:
-                            self._try_except(callback, message.payload)
+                            callback(self, message.payload)
                     self._buffer.clear()
 
         def connection_lost(self, exc):
             for callback in self._spore._on_disconnect_callbacks:
-                self._try_except(callback)
+                callback(self)
             self._spore._protocols.remove(self)
             if len(self._spore._protocols) == 0:
                 asyncio.Task(self._spore._notify_protocols_empty(), loop=self._spore._loop)
-
-        def _try_except(self, callback, *args, **kwargs):
-            try:
-                callback(self, *args, **kwargs)
-            except:
-                traceback.print_exc()
 
     def __init__(self, seeds=[], address=None):
         self._loop = None
@@ -79,7 +73,7 @@ class Spore(object):
         self._on_connect_callbacks = []
         self._on_disconnect_callbacks = []
         self._on_message_callbacks = collections.defaultdict(list)
-        self.nonce = random.randint(0,2**32-1)
+        self._nonce = random.randint(0,2**32-1)
 
         @self.on_message('peer', Peer.make)
         def receive_peer(from_peer, new_peer):
@@ -94,17 +88,17 @@ class Spore(object):
 
         @self.on_message('spore_info', Info.make)
         def info(peer, info):
-            if info.nonce == self.nonce:
+            if info.nonce == self._nonce:
                 if (peer.address[0], info.port) not in self._banned_addresses:
                     self._banned_addresses.append((peer.address[0], info.port))
                 peer._transport.close()
             else:
-                for callback in self._spore._on_connect_callbacks:
-                    self._try_except(callback)
                 if info.port:
                     receive_peer(peer, Peer.make(ip=socket.inet_aton(peer.address[0]), port=info.port))
                 for address in self._known_addresses:
                     peer.send('peer', Peer.make(ip=socket.inet_aton(address[0]), port=address[1]))
+                for callback in self._on_connect_callbacks:
+                    callback(peer)
 
 
     def on_connect(self, func):
