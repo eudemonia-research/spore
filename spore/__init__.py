@@ -22,8 +22,12 @@ class Spore(object):
             self.address = transport.get_extra_info('peername')
             assert self._transport is None
             self._transport = transport
-            for callback in self._spore._on_connect_callbacks:
-                self._try_except(callback)
+
+            info = Info.make(version=0, nonce=self.nonce)
+            if self._address:
+                info.port = self._address[1]
+            peer.send('spore_info', info)
+
 
         def send(self, method, payload=b''):
             if hasattr(payload, 'serialize'):
@@ -88,24 +92,19 @@ class Spore(object):
                 self._try_new_connections.set()
 
 
-        @self.on_message('info', Info.make)
+        @self.on_message('spore_info', Info.make)
         def info(peer, info):
             if info.nonce == self.nonce:
                 if (peer.address[0], info.port) not in self._banned_addresses:
                     self._banned_addresses.append((peer.address[0], info.port))
                 peer._transport.close()
             else:
+                for callback in self._spore._on_connect_callbacks:
+                    self._try_except(callback)
                 if info.port:
                     receive_peer(peer, Peer.make(ip=socket.inet_aton(peer.address[0]), port=info.port))
                 for address in self._known_addresses:
                     peer.send('peer', Peer.make(ip=socket.inet_aton(address[0]), port=address[1]))
-
-        @self.on_connect
-        def share_info(peer):
-            info = Info.make(version=0, nonce=self.nonce)
-            if self._address:
-                info.port = self._address[1]
-            peer.send('info', info)
 
 
     def on_connect(self, func):
