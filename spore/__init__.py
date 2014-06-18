@@ -158,7 +158,6 @@ class Spore(object):
         self._loop = None
 
     def shutdown(self):
-        assert self._loop is not None, "spore instance run() must be called before shutdown()"
         if self._main_task is None:
             sys.stderr.write("Warning: shutdown called on spore instance that is stopped.\n")
         else:

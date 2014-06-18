@@ -91,6 +91,10 @@ class TestNetworking(unittest.TestCase):
     # TODO: def test_max_connections(self):
     # Test the connection queue.
 
+    def test_graceful_illegal_shutdown(self):
+        blah = Spore()
+        blah.shutdown()
+
     def test_on_connect(self):
         on_connect_called = False
         on_disconnect_called = False
