@@ -1,5 +1,31 @@
+'''
+
+Spore
+=====
+
+Spore is a simple p2p networking library.
+
+Getting started
+---------------
+
+Here's an example to get you started::
+
+    from spore import Spore
+
+    spore_example = Spore(seeds=[('spore-example.eudemonia.io', 39406)], address=('0.0.0.0', 39406))
+
+    @spore_example.on_connect
+    def say_hello(peer, message):
+        peer.send('greeting', b'Hello, friend!')
+
+    @spore_example.handler('greeting')
+    def greeting(peer, message):
+        if len(message) < 50:
+            print(str(peer.address) + " said: " + message + " to us!")
+
+'''
+
 import asyncio
-import traceback
 import threading
 import sys
 import socket
