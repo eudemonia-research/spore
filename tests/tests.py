@@ -124,13 +124,13 @@ class TestNetworking(unittest.TestCase):
         PAYLOAD_FOR_SERVER = b'test2'
         PAYLOAD_FOR_CLIENT = b'test1'
 
-        @self.server.handler('client_to_server')
+        @self.server.on_message('client_to_server')
         def client_to_server(peer, payload):
             nonlocal server_received_message
             self.assertEqual(payload, PAYLOAD_FOR_SERVER)
             server_received_message = True
 
-        @self.client.handler('server_to_client')
+        @self.client.on_message('server_to_client')
         def server_to_client(peer, payload):
             nonlocal client_received_message
             self.assertEqual(payload, PAYLOAD_FOR_CLIENT)
@@ -219,7 +219,7 @@ class TestNetworking(unittest.TestCase):
             time.sleep(0.1)
             self.client = Spore(seeds=[('127.0.0.1', self.port)])
 
-            @self.client.handler('test_in')
+            @self.client.on_message('test_in')
             def test_in_handler(node, payload):
                 nonlocal counter
                 if payload == b'1':
@@ -236,7 +236,7 @@ class TestNetworking(unittest.TestCase):
         payload_test = b'\x00' * 1024
         payload_recv = None
         
-        @self.server.handler('test_large_packets')
+        @self.server.on_message('test_large_packets')
         def recPackets(node, payload):
             nonlocal payload_recv
             payload_recv = payload

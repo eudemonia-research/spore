@@ -1,4 +1,5 @@
 dist
+spore.egg-info/
 .idea
 build
 MANIFEST

@@ -31,8 +31,8 @@ import sys
 import socket
 import collections
 import random
-import encodium
-from .fields import Message, Peer, Info
+from .structs import Message, Peer, Info
+
 
 class Spore(object):
     class Protocol(asyncio.Protocol):
@@ -49,31 +49,33 @@ class Spore(object):
             assert self._transport is None
             self._transport = transport
 
-            info = Info.make(version=0, nonce=self._spore._nonce)
+            info = Info(version=0, nonce=self._spore._nonce)
             if self._spore._address:
                 info.port = self._spore._address[1]
             self.send('spore_info', info)
 
 
         def send(self, method, payload=b''):
-            if hasattr(payload, 'serialize'):
-                payload = payload.serialize()
-            message = Message.make(method=method, payload=payload).serialize()
-            self._transport.write(len(message).to_bytes(4, 'big'))
-            self._transport.write(message)
+            if hasattr(payload, 'to_json'):
+                payload = payload.to_json().encode()
+            message = Message(method=method, payload=payload).to_json()
+            self._transport.write((message + '\n').encode())
 
         def data_received(self, data):
+            # TODO: refactor this out so we can support more than just JSON
             for byte in data:
                 self._buffer.append(byte)
-                length = len(self._buffer)
-                if length > 4 and length - 4 == int.from_bytes(self._buffer[0:4], 'big'):
-                    message = Message.make(bytes(self._buffer[4:]))
+                if self._buffer[-1] == 10:
+                    try:
+                        s = self._buffer.decode()
+                    except UnicodeDecodeError:
+                        # Invalid message was sent, drop the connection.
+                        self._transport.close()
+                        return
+                    message = Message.from_json(s)
                     for callback, deserialize in self._spore._on_message_callbacks[message.method]:
                         if deserialize:
-                            if deserialize.__class__ == type and issubclass(deserialize, encodium.Field):
-                                sys.stderr.write("Warning: passing encodium fields into spore is deprecated and will be removed in version 1.0\n")
-                                deserialize = deserialize.make
-                            callback(self, deserialize(message.payload))
+                            callback(self, deserialize(message.payload.decode()))
                         else:
                             callback(self, message.payload)
                     self._buffer.clear()
@@ -99,9 +101,9 @@ class Spore(object):
         self._on_connect_callbacks = []
         self._on_disconnect_callbacks = []
         self._on_message_callbacks = collections.defaultdict(list)
-        self._nonce = random.randint(0,2**32-1)
+        self._nonce = random.randint(0, 2 ** 32 - 1)
 
-        @self.on_message('peer', Peer.make)
+        @self.on_message('peer', Peer.from_json)
         def receive_peer(from_peer, new_peer):
             # TODO: track which peers know about which peers to reduce traffic by a factor of two.
             # TODO: Do not relay this peer if it's on a network that is unreachable.
@@ -112,7 +114,7 @@ class Spore(object):
                 self._try_new_connections.set()
 
 
-        @self.on_message('spore_info', Info.make)
+        @self.on_message('spore_info', Info.from_json)
         def info(peer, info):
             if info.nonce == self._nonce:
                 if (peer.address[0], info.port) not in self._banned_addresses:
@@ -120,9 +122,9 @@ class Spore(object):
                 peer._transport.close()
             else:
                 if info.port:
-                    receive_peer(peer, Peer.make(ip=socket.inet_aton(peer.address[0]), port=info.port))
+                    receive_peer(peer, Peer(ip=socket.inet_aton(peer.address[0]), port=info.port))
                 for address in self._known_addresses:
-                    peer.send('peer', Peer.make(ip=socket.inet_aton(address[0]), port=address[1]))
+                    peer.send('peer', Peer(ip=socket.inet_aton(address[0]), port=address[1]))
                 for callback in self._on_connect_callbacks:
                     callback(peer)
 
@@ -200,7 +202,7 @@ class Spore(object):
         for protocol in self._protocols:
             if protocol.address == address:
                 return False
-            # TODO: check other ways in which this peer might prevent us from connecting to address
+                # TODO: check other ways in which this peer might prevent us from connecting to address
         return True
 
     @asyncio.coroutine
