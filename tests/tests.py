@@ -2,6 +2,7 @@ import unittest
 # from spore import rlp
 import threading
 from spore import Spore
+import sys
 import time
 import random
 
@@ -93,7 +94,13 @@ class TestNetworking(unittest.TestCase):
 
     def test_graceful_illegal_shutdown(self):
         blah = Spore()
+        class MockStdout:
+            def write(self, data):
+                pass
+        stderr = sys.stderr
+        sys.stderr = MockStdout() # This is to silence the error message.
         blah.shutdown()
+        sys.stderr = stderr
 
     def test_on_connect(self):
         on_connect_called = False
