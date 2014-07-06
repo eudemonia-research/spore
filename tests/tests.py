@@ -6,86 +6,86 @@ import sys
 import time
 import random
 
+def run_in_own_thread(spore):
+    threading.Thread(target=spore.run).start()
+    time.sleep(0.01)
+
 class TestThreading(unittest.TestCase):
 
     def test_threading(self):
+        time.sleep(0.02)
         started = threading.active_count()
         port = random.randint(10000, 60000)
-        server = Spore(seeds=[], address=('127.0.0.1', port))
-        threading.Thread(target=server.run).start()
-        time.sleep(0.15)
+        server = Spore(seeds=[], address=('127.0.0.1', port), source_ip='127.0.0.1')
+        run_in_own_thread(server)
+        time.sleep(0.02)
         self.assertTrue(threading.active_count() > started)
         server.shutdown()
-        time.sleep(0.15)
+        # TODO: work out why shutdown needs to pause -- it shouldn't =/
+        time.sleep(0.01)
         self.assertEqual(threading.active_count(), started)
 
     def test_two_threading(self):
+        time.sleep(0.05)
         started = threading.active_count()
         port = random.randint(10000, 60000)
-        server = Spore(seeds=[], address=('127.0.0.1', port))
-        threading.Thread(target=server.run).start()
-        time.sleep(0.15)
+        server = Spore(seeds=[], address=('127.0.0.1', port), source_ip='127.0.0.1')
+        run_in_own_thread(server)
         ac = threading.active_count()
         self.assertTrue(ac > started)
         client = Spore(seeds=[('127.0.0.1',port)])
-        threading.Thread(target=client.run).start()
-        time.sleep(0.15)
+        run_in_own_thread(client)
         self.assertTrue(threading.active_count() > ac)
         server.shutdown()
-        time.sleep(0.15)
         client.shutdown()
-        time.sleep(0.15)
+        # TODO: work out why shutdown needs to pause -- it shouldn't =/
+        time.sleep(0.01)
         self.assertEqual(threading.active_count(), started)
 
-class TestNetworking(unittest.TestCase):
+class TestEverything(unittest.TestCase):
 
     def setUp(self):
         """ Create a client and server, and run them in their own threads. """
         self.port = random.randint(10000, 60000)
-        self.server = Spore(seeds=[], address=('127.0.0.1', self.port))
-        self.client = Spore(seeds=[('127.0.0.1', self.port)])
-        threading.Thread(target=self.server.run).start()
-        threading.Thread(target=self.client.run).start()
-        # Sleep for 150ms to give them time to connect
-        time.sleep(0.15)
+        self.server = Spore(address=('127.0.0.1', self.port), source_ip='127.0.0.1')
+        self.client = Spore(seeds=[('127.0.0.1', self.port)], source_ip='127.0.0.2')
+        run_in_own_thread(self.server)
+        run_in_own_thread(self.client)
 
     def tearDown(self):
         self.server.shutdown()
         self.client.shutdown()
-        # Sleep for 150ms to give them time to shutdown
-        time.sleep(0.15)
 
     def test_connection(self):
+        time.sleep(0.01)
 
-        #print("Test that they are connected to each other.")
+        # Check they're connected.
         self.assertEqual(self.client.num_connected_peers(), 1)
         self.assertEqual(self.server.num_connected_peers(), 1)
 
-        #print("Stop them")
+        # shut them down.
         self.server.shutdown()
         self.client.shutdown()
 
-        #print("Sleep for 150ms let them clean up")
-        time.sleep(0.15)
-
-        #print("Test that they are no longer connected to each other.")
+        # test they're not connected.
         self.assertEqual(self.server.num_connected_peers(), 0)
         self.assertEqual(self.client.num_connected_peers(), 0)
 
-        #print("Ensure there are no other threads running.")
+        # apparently this shit needs to sleep for a second
+        # TODO: bonus points for working out why this is.
+        time.sleep(0.01)
+
+        # and this is the only running thread.
         self.assertEqual(threading.active_count(), 1)
 
-        #print("Sleep 150ms")
-        time.sleep(0.15)
+        # start them up again
+        run_in_own_thread(self.server)
+        run_in_own_thread(self.client)
 
-        #print("Start them again")
-        threading.Thread(target=self.server.run).start()
-        threading.Thread(target=self.client.run).start()
+        # sleep 10ms for connection.
+        time.sleep(0.01)
 
-        #print("Sleep again")
-        time.sleep(0.15)
-
-        #print("Test that they are connected to each other.")
+        # make sure they're connected again.
         self.assertEqual(self.client.num_connected_peers(), 1)
         self.assertEqual(self.server.num_connected_peers(), 1)
 
@@ -114,13 +114,12 @@ class TestNetworking(unittest.TestCase):
         def do_one_thing(peer):
             nonlocal on_disconnect_called
             on_disconnect_called = True
-        new_client = Spore(seeds=[('127.0.0.1', self.port)])
-        threading.Thread(target=new_client.run).start()
-        time.sleep(0.1)
+        new_client = Spore(seeds=[('127.0.0.1', self.port)], source_ip='127.0.0.3')
+        run_in_own_thread(new_client)
+        time.sleep(0.01)
         self.assertTrue(on_connect_called)
-        time.sleep(0.1)
         new_client.shutdown()
-        time.sleep(0.1)
+        time.sleep(0.01)
         self.assertTrue(on_disconnect_called)
 
     def test_messages(self):
@@ -156,13 +155,27 @@ class TestNetworking(unittest.TestCase):
         self.assertTrue(server_received_message)
 
     def test_peerlist(self):
-        new_clients = [Spore(seeds=[('127.0.0.1', self.port)],address=('127.0.0.1', self.port+1+i)) for i in range(9)]
+        new_clients = [Spore(seeds=[('127.0.0.1', self.port)],
+                             address=('127.0.0.'+str(3+i), self.port+i+1),
+                             source_ip='127.0.0.'+str(3+i)) for i in range(9)]
         for new_client in new_clients:
-            threading.Thread(target=new_client.run).start()
-        # Wait for a while because things need to propagate.
-        time.sleep(15)
+            run_in_own_thread(new_client)
+
         try:
-            self.assertEqual(self.client.num_connected_peers(), 10)
+            failed = 0
+
+            for client in [self.client] + new_clients:
+                while client.num_connected_peers() != 10:
+                    time.sleep(0.01)
+                    failed += 1
+                    # wait for at most one second on this test.
+                    self.assertLess(failed, 100)
+
+            time.sleep(0.01)
+
+            for client in [self.client] + new_clients:
+                self.assertEqual(client.num_connected_peers(), 10)
+
         finally:
             for new_client in new_clients:
                 new_client.shutdown()
@@ -201,56 +214,65 @@ class TestNetworking(unittest.TestCase):
 
     def test_broadcast(self):
         self.client.shutdown()
-        time.sleep(0.1)
-        #print('should see 3 broadcasts:')
-        #print('broadcast1')
         self.server.broadcast('anybroadcast', b'some data')
-        time.sleep(0.1)
-        self.client = Spore(seeds=[('127.0.0.1', self.port)])
-        threading.Thread(target=self.client.run).start()
-        time.sleep(0.1)
-        #print('broadcast2')
+        self.client = Spore(seeds=[('127.0.0.1', self.port)], source_ip='127.0.0.2')
+        run_in_own_thread(self.client)
         self.server.broadcast('test',b'test')
-        time.sleep(0.1)
-        #print('broadcast3')
         self.server.broadcast('test',b'test')
-        time.sleep(0.1)
-        # this will either finish or not - locking erbytesror
-        # no asserts
-        
-    def test_repeatConnections(self):
+
+    def test_repeat_connections(self):
         counter = 0
-        times_run = 10
-        for i in range(times_run):
+        TIMES_RUN = 10
+        failed = 0
+        for i in range(TIMES_RUN):
             self.client.shutdown()
-            time.sleep(0.1)
-            self.client = Spore(seeds=[('127.0.0.1', self.port)])
+
+            self.client = Spore(seeds=[('127.0.0.1', self.port)], source_ip='127.0.0.2')
+
+            hit = False
 
             @self.client.on_message('test_in')
             def test_in_handler(node, payload):
-                nonlocal counter
-                if payload == b'1':
+                nonlocal counter, hit
+                if payload == b'1' and not hit:
                     counter += 1
-                    
-            threading.Thread(target=self.client.run).start()
-            time.sleep(0.1)
-            self.server.broadcast('test_in', b'1')
-            time.sleep(0.1)
-            
-        self.assertEqual(counter, times_run)
-        
+                    hit = True
+
+            run_in_own_thread(self.client)
+            while not hit:
+                time.sleep(0.01)
+                self.server.broadcast('test_in', b'1')
+
+                # wait for at most two seconds on this test.
+                failed += 1
+                self.assertLess(failed, 200)
+
+        self.assertEqual(counter, TIMES_RUN)
+
     def test_large_packets(self):
         payload_test = b'\x00' * 1024
         payload_recv = None
-        
+
         @self.server.on_message('test_large_packets')
         def recPackets(node, payload):
             nonlocal payload_recv
             payload_recv = payload
-            
+
         self.client.broadcast('test_large_packets', payload_test)
-        time.sleep(0.1)
+        for _ in range(200):
+            time.sleep(0.01) # wait for at most 2 seconds for payload_recv
+            if payload_recv:
+                break
         self.assertEqual(payload_test, payload_recv)
+
+    def test_ban_self(self):
+        duplicate = Spore(seeds=[('127.0.0.1',self.port)])
+        duplicate._nonce = self.server._nonce # fake this part. this breaks abstraction :(
+        run_in_own_thread(duplicate)
+        try:
+            self.assertEqual(duplicate.num_connected_peers(), 0)
+        finally:
+            duplicate.shutdown()
 
 '''
 class TestRLP(unittest.TestCase):

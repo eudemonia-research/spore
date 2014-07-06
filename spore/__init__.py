@@ -44,14 +44,19 @@ class Spore(object):
 
         def connection_made(self, transport):
             # TODO: check if we're full, and let them know.
-            self._spore._protocols.append(self)
             self.address = transport.get_extra_info('peername')
-            assert self._transport is None
+
+            if not self._spore._should_connect_to(self.address):
+                transport.close()
+                return
+
+            # _transport must be set when we add this to spore's list.
+            # See the connection_lost method.
+            self._spore._protocols.append(self)
             self._transport = transport
 
-            info = Info(version=0, nonce=self._spore._nonce)
-            if self._spore._address:
-                info.port = self._spore._address[1]
+            port = self._spore._address[1] if self._spore._address else None
+            info = Info(version=0, nonce=self._spore._nonce, port=port)
             self.send('spore_info', info)
 
 
@@ -81,13 +86,17 @@ class Spore(object):
                     self._buffer.clear()
 
         def connection_lost(self, exc):
-            for callback in self._spore._on_disconnect_callbacks:
-                callback(self)
-            self._spore._protocols.remove(self)
-            if len(self._spore._protocols) == 0:
-                asyncio.Task(self._spore._notify_protocols_empty(), loop=self._spore._loop)
+            # If _transport is set, then we added it to spore's list.
+            # Otherwise we did not add it to spore's list, instead
+            # we closed immediately, so no action is necessary here.
+            if self._transport:
+                for callback in self._spore._on_disconnect_callbacks:
+                    callback(self)
+                self._spore._protocols.remove(self)
+                if len(self._spore._protocols) == 0:
+                    asyncio.Task(self._spore._notify_protocols_empty(), loop=self._spore._loop)
 
-    def __init__(self, seeds=[], address=None):
+    def __init__(self, seeds=[], address=None, source_ip=None):
         self._loop = None
         self._main_thread = None
         self._protocols = []
@@ -95,7 +104,7 @@ class Spore(object):
         self._server = None
         self._known_addresses = seeds
         self._try_new_connections = None
-        self._banned_addresses = []
+        self._source_ip = source_ip
         self._address = address
         self._main_task = None
         self._on_connect_callbacks = []
@@ -117,8 +126,6 @@ class Spore(object):
         @self.on_message('spore_info', Info.from_json)
         def info(peer, info):
             if info.nonce == self._nonce:
-                if (peer.address[0], info.port) not in self._banned_addresses:
-                    self._banned_addresses.append((peer.address[0], info.port))
                 peer._transport.close()
             else:
                 if info.port:
@@ -179,7 +186,7 @@ class Spore(object):
         try:
             self._loop.run_until_complete(self._main_task)
         except (asyncio.CancelledError, KeyboardInterrupt):
-            self._loop.run_until_complete(self._clean_up())
+            complete = self._loop.run_until_complete(self._clean_up())
 
         self._main_task = None
         self._loop.close()
@@ -197,10 +204,10 @@ class Spore(object):
         return Spore.Protocol(self)
 
     def _should_connect_to(self, address):
-        if address in self._banned_addresses:
-            return False
+        ip, port = address
+        # TODO: implement banning.
         for protocol in self._protocols:
-            if protocol.address == address:
+            if protocol.address[0] == ip:
                 return False
                 # TODO: check other ways in which this peer might prevent us from connecting to address
         return True
@@ -222,11 +229,15 @@ class Spore(object):
             try_again = False
 
             # Try connecting to all peers.
-            for address in self._known_addresses:
-                if self._should_connect_to(address):
+            for ip, port in self._known_addresses:
+                if self._should_connect_to((ip, port)):
                     try:
-                        result = yield from self._loop.create_connection(self._protocol_factory, address[0], address[1])
-                    except ConnectionRefusedError:
+                        local_addr = None
+                        if self._source_ip:
+                            local_addr = (self._source_ip, 0) # random.randint(1025, 2**16-1))
+                        result = yield from self._loop.create_connection(self._protocol_factory, ip, port,
+                                                                         local_addr=local_addr)
+                    except (ConnectionRefusedError, ConnectionResetError):
                         # If there's something to try that failed, try again real quick.
                         # This is mostly useful for tests.
                         try_again = True
@@ -235,14 +246,12 @@ class Spore(object):
                         # TODO: increase misbehaving for that peer.
 
             if try_again:
-                self._loop.call_later(0.01, self._try_new_connections.set)
+                self._loop.call_later(0.05, self._try_new_connections.set)
 
     @asyncio.coroutine
     def _create_server(self):
         if self._address:
-            #print("Listening on",self._address)
             self._server = yield from self._loop.create_server(self._protocol_factory, *self._address)
-            #print('serving on {}'.format(self._server.sockets[0].getsockname()))
 
     @asyncio.coroutine
     def _wait_protocols_empty(self):
