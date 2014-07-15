@@ -234,7 +234,7 @@ class Spore(object):
                     try:
                         local_addr = None
                         if self._source_ip:
-                            local_addr = (self._source_ip, 0) # random.randint(1025, 2**16-1))
+                            local_addr = (self._source_ip, 0)
                         result = yield from self._loop.create_connection(self._protocol_factory, ip, port,
                                                                          local_addr=local_addr)
                     except (ConnectionRefusedError, ConnectionResetError):
