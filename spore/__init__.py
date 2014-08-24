@@ -42,6 +42,9 @@ class Spore(object):
             self.data = dict()
             self._transport = None
 
+        def __str__(self):
+            return "Spore Protocol Object: connected to " + str(self.address)
+
         def connection_made(self, transport):
             # TODO: check if we're full, and let them know.
             self.address = transport.get_extra_info('peername')
@@ -64,7 +67,7 @@ class Spore(object):
             if hasattr(payload, 'to_json'):
                 payload = payload.to_json().encode()
             message = Message(method=method, payload=payload).to_json()
-            self._transport.write((message + '\n').encode())
+            self._transport.write((message + '\x10').encode())
 
         def data_received(self, data):
             # TODO: refactor this out so we can support more than just JSON
