@@ -14,6 +14,7 @@ def beacon(peer, message):
   peer.send('beacon_received', b'Thanks!')
 
 # Run in the background:
+print("Begin p2p threads")
 threading.Thread(target=lighthouse.run).start()
 threading.Thread(target=ship.run).start()
 
@@ -21,6 +22,7 @@ threading.Thread(target=ship.run).start()
 counter = 0
 try:
   while True:
+    print('sending beacon..')
     lighthouse.broadcast('beacon', counter.to_bytes(4,'big'))
     counter += 1
     time.sleep(1)

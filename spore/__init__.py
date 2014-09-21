@@ -33,23 +33,36 @@ import collections
 import random
 from .structs import Message, Peer, Info
 
+DEBUG = False
+
+def print_line(*args):
+    if DEBUG:
+        print(*args)
 
 class Spore(object):
     class Protocol(asyncio.Protocol):
         def __init__(self, spore):
             self._spore = spore
             self._buffer = bytearray()
-            self.data = dict()
             self._transport = None
+
+            self.nonce = None
+            self.data = dict()
+
+            print_line("Spore.Protocol: created..")
 
         def __str__(self):
             return "Spore Protocol Object: connected to " + str(self.address)
 
         def connection_made(self, transport):
+            print_line("Spore.Protocol: connection made..")
             # TODO: check if we're full, and let them know.
             self.address = transport.get_extra_info('peername')
 
+            print_line("Spore.Protocol: got addr..")
+
             if not self._spore._should_connect_to(self.address):
+                print_line("Spore.Protocol will not connect to", self.address)
                 transport.close()
                 return
 
@@ -57,6 +70,8 @@ class Spore(object):
             # See the connection_lost method.
             self._spore._protocols.append(self)
             self._transport = transport
+
+            print_line("Spore.Protocol Sending info..")
 
             port = self._spore._address[1] if self._spore._address else None
             info = Info(version=0, nonce=self._spore._nonce, port=port)
@@ -67,10 +82,12 @@ class Spore(object):
             if hasattr(payload, 'to_json'):
                 payload = payload.to_json().encode()
             message = Message(method=method, payload=payload).to_json()
-            self._transport.write((message + '\x10').encode())
+            print_line("Spore.Protocol: writing transport")
+            self._transport.write((message + "\n").encode())
 
         def data_received(self, data):
             # TODO: refactor this out so we can support more than just JSON
+            print_line("Spore.Protocol.data_received:", data)
             for byte in data:
                 self._buffer.append(byte)
                 if self._buffer[-1] == 10:
@@ -95,11 +112,13 @@ class Spore(object):
             if self._transport:
                 for callback in self._spore._on_disconnect_callbacks:
                     callback(self)
+                if self.nonce in self._spore._map_nonce_to_client:
+                    self._spore._map_nonce_to_client.pop(self.nonce)
                 self._spore._protocols.remove(self)
                 if len(self._spore._protocols) == 0:
                     asyncio.Task(self._spore._notify_protocols_empty(), loop=self._spore._loop)
 
-    def __init__(self, seeds=[], address=None, source_ip=None):
+    def __init__(self, seeds=[], address=None, source_ip=None, debug=False):
         self._loop = None
         self._main_thread = None
         self._protocols = []
@@ -113,7 +132,10 @@ class Spore(object):
         self._on_connect_callbacks = []
         self._on_disconnect_callbacks = []
         self._on_message_callbacks = collections.defaultdict(list)
-        self._nonce = random.randint(0, 2 ** 32 - 1)
+        self._nonce = random.randint(0, 2 ** 32 - 1)  # nonce should be unique for any and all peers
+        self._map_nonce_to_client = {self._nonce: None}
+        self._map_address_to_last_nonce = {address: self._nonce}
+        self._debug = debug
 
         @self.on_message('peer', Peer.from_json)
         def receive_peer(from_peer, new_peer):
@@ -128,9 +150,13 @@ class Spore(object):
 
         @self.on_message('spore_info', Info.from_json)
         def info(peer, info):
-            if info.nonce == self._nonce:
+            print_line("Spore: spore_info received.")
+            if info.nonce in self._map_nonce_to_client:
                 peer._transport.close()
+                print_line("Spore: closing transport")
             else:
+                self._map_nonce_to_client[info.nonce] = peer
+                peer.nonce = info.nonce
                 if info.port:
                     receive_peer(peer, Peer(ip=socket.inet_aton(peer.address[0]), port=info.port))
                 for address in self._known_addresses:
@@ -209,8 +235,12 @@ class Spore(object):
     def _should_connect_to(self, address):
         ip, port = address
         # TODO: implement banning.
+        if address in self._map_address_to_last_nonce:
+            if self._map_address_to_last_nonce[address] in self._map_nonce_to_client:
+                return False
         for protocol in self._protocols:
-            if protocol.address[0] == ip:
+            # connect to localhost in debug
+            if protocol.address[0] == ip and not self._debug:
                 return False
                 # TODO: check other ways in which this peer might prevent us from connecting to address
         return True
@@ -235,11 +265,14 @@ class Spore(object):
             for ip, port in self._known_addresses:
                 if self._should_connect_to((ip, port)):
                     try:
+                        #print_line("Spore: doing something..")
                         local_addr = None
                         if self._source_ip:
                             local_addr = (self._source_ip, 0)
                         result = yield from self._loop.create_connection(self._protocol_factory, ip, port,
                                                                          local_addr=local_addr)
+                        print_line(result)
+                        print_line((ip, port))
                     except (ConnectionRefusedError, ConnectionResetError):
                         # If there's something to try that failed, try again real quick.
                         # This is mostly useful for tests.
@@ -248,13 +281,14 @@ class Spore(object):
                         #       (perhaps there is a better way to do this logic anyway, on a per-known-address basis?)
                         # TODO: increase misbehaving for that peer.
 
-            if try_again:
-                self._loop.call_later(0.05, self._try_new_connections.set)
+            self._loop.call_later(0.05 if try_again else 5, self._try_new_connections.set)
 
     @asyncio.coroutine
     def _create_server(self):
         if self._address:
+            print_line("Spore: attempting to create server..")
             self._server = yield from self._loop.create_server(self._protocol_factory, *self._address)
+            print_line(self._server.sockets)
 
     @asyncio.coroutine
     def _wait_protocols_empty(self):
